@@ -1,0 +1,377 @@
+; ---------------------------------
+; 一周ぶん pwm とライン選択を送る
+; side set:
+;  - OE : pwm clock
+; set:
+;  - A  : line select clock (pos edge で shift)
+;  - C  : line select data
+; out:
+;  - B1234: output enable (low active)
+; 
+.program led_pwm
+.side_set 1
+
+    ; Data
+    ;  PWMClockCount : 16
+    ;  LineSize : 8
+    ;  B1234    : 8
+
+    out isr, 16             side 0 ; isr: pwm clock count -1
+    out y, 8                side 0 ; line size - 2
+    ; osr : B1234
+
+loop_line_sel:
+    ; B=0 点灯
+    mov pins, osr           side 0
+    set pins, 0b00          side 0
+
+    mov x, isr              side 0 [15]
+loop_pwm:
+    nop                     side 1
+    jmp x-- loop_pwm        side 0
+
+    ; B=1
+    set x, 15               side 0 [15]
+    mov pins, x             side 0
+    ; data=0
+    set pins, 0b00          side 0 [15]
+    set pins, 0b01          side 0 [14]
+    jmp y-- loop_line_sel   side 0
+
+    ; last
+    ; B=0 点灯
+    mov pins, osr           side 0
+    set pins, 0b00          side 0
+    mov x, isr              side 0 [15]
+loop_pwm2:
+    nop                     side 1
+    jmp x-- loop_pwm2       side 0
+
+    ; B=1
+    set x, 15               side 0 [15]
+    mov pins, x             side 0
+    ; 最後のlineだけ data=1 を送る
+    set pins, 0b10          side 0 [15]
+    set pins, 0b11          side 0 [15]
+
+    mov pins, osr           side 0
+    set pins, 0b10          side 0
+
+    out null, 8             side 0
+    ; irq wait 0
+
+% c-sdk {
+static inline void
+initProgramLEDPWM(PIO pio, uint sm, uint offset,
+                  uint pinAC,
+                  uint pinB1234,
+                  uint pinOE)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinAC, 2, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinB1234, 4, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinOE, 1, true);
+
+    pio_gpio_init(pio, pinAC + 0);
+    pio_gpio_init(pio, pinAC + 1);
+    for (int i = 0; i < 4; ++i)
+    {
+        pio_gpio_init(pio, pinB1234 + i);
+    }
+    pio_gpio_init(pio, pinOE + 0);
+
+    pio_sm_config c = led_pwm_program_get_default_config(offset);
+    sm_config_set_set_pins(&c, pinAC, 2);
+    sm_config_set_out_pins(&c, pinB1234, 4);
+    sm_config_set_sideset_pins(&c, pinOE);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
+
+; side set:
+;   OE : pwm clock
+; set:
+;   bit 210
+;       CBA
+;   A: line select clock (pos edge で shift)
+;   B: output enable (low active)
+;   C: line select data
+.program led_pwm_2
+.side_set 1
+
+    out isr, 16             side 0 ; isr: pwm clock count - 1
+    out y, 16               side 0 ; line count - 2
+
+loop_line:
+    mov x, isr              side 0  [13]
+
+loop_pwm:
+    nop                     side 1
+    jmp x--, loop_pwm       side 0
+
+    nop                     side 0  [15]
+    set pins, 0b011         side 0  [15]
+    set pins, 0b000         side 0
+    jmp y--, loop_line      side 0
+
+    ;
+    nop                     side 0  [2]
+loop_pwm2:
+    nop                     side 1
+    jmp x--, loop_pwm2      side 0
+
+    nop                     side 0  [15]
+    set pins, 0b111         side 0  [15]
+    set pins, 0b100         side 0
+
+; 15 inst
+
+
+; ---------------------------------
+; out LED data with CLK and LAT
+; out:
+;  - R1 R2
+; 
+; side set:
+;  - CLK
+;
+; set:
+;  - LAT
+;  
+.program led_data1
+.side_set 1
+
+    ; isr: pixel bits * module units - 2 = 158
+    ; y: unit_w * h - 1
+    mov x, isr          side 0
+
+.wrap_target
+loop_pix:
+    out pins, 2         side 0
+    out null, 6         side 0
+    jmp x-- loop_pix    side 1  ; 立ち上がりで fetch
+
+    ; 最後の 1 clock LAT でピクセル確定
+    out pins, 2         side 0
+    out null, 6         side 0
+    set pins, 1         side 0
+    mov x, isr          side 1
+    set pins, 0         side 1
+.wrap
+
+
+
+
+
+; ---------------------------------
+; out LED data
+; out:
+;  - G1 G2
+.program led_data23
+
+    mov x, isr
+
+.wrap_target
+loop_pix:
+    out pins, 2
+    out null, 6
+    jmp x-- loop_pix
+
+    out pins, 2
+    out null, 6
+    nop
+    mov x, isr
+    nop
+.wrap
+
+% c-sdk {
+static inline void
+initProgramLEDData1(PIO pio, uint sm, uint offset,
+                    uint pinData,
+                    uint pinCLK,
+                    uint pinLAT)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinData, 2, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinCLK, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinLAT, 1, true);
+
+    pio_gpio_init(pio, pinData + 0);
+    pio_gpio_init(pio, pinData + 1);
+    pio_gpio_init(pio, pinCLK + 0);
+    pio_gpio_init(pio, pinLAT + 0);
+
+    pio_sm_config c = led_data1_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pinData, 2);
+    sm_config_set_set_pins(&c, pinLAT, 1);
+    sm_config_set_sideset_pins(&c, pinCLK);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, false);
+}
+
+static inline void
+initProgramLEDData23(PIO pio, uint sm, uint offset, uint pinData)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinData, 2, true);
+    pio_gpio_init(pio, pinData + 0);
+    pio_gpio_init(pio, pinData + 1);
+
+    pio_sm_config c = led_data23_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pinData, 2);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, false);
+}
+
+%}
+
+
+; ---------------------------------
+; send command
+; out:
+;  - RGB1 RGB2
+; side set:
+;  - CLK
+;  - FFCLK
+; set:
+;  - LAT
+;
+; clk の立ち上がりで fetch
+.program led_command
+.side_set 1
+
+    set pins, 0     side 0
+    out x, 16       side 1  ; L count - 1
+    out y, 16       side 0  ; H count - 1
+
+loop0:
+    out pins, 8     side 0
+    jmp x-- loop0   side 1
+
+    set pins, 1     side 0
+loop1:
+    out pins, 8     side 0
+    jmp y-- loop1   side 1
+
+;
+.program led_command_2
+.side_set 2
+
+    out x, 16       side 0b00  ; L count - 1
+    out isr, 16     side 0b00  ; H count - 1
+
+    ; LAT = 0
+loop0:
+    out pins, 8     side 0b00
+    set y, 1        side 0b10
+loop0_:
+    set pins, 0     side 0b00
+    jmp y-- loop0_  side 0b10
+    nop             side 0b00 [1]
+    jmp x-- loop0   side 0b01 [1]
+
+    ; LAT = 1
+    mov x, isr      side 0b00
+loop1:
+    out pins, 8     side 0b00
+    set y, 1        side 0b10
+loop1_:
+    set pins, 1     side 0b00
+    jmp y-- loop1_  side 0b10
+    nop             side 0b00 [1]
+    jmp x-- loop1   side 0b01 [1]
+
+
+% c-sdk {
+static inline void
+initProgramLEDCommand(PIO pio, uint sm, uint offset,
+                      uint pinData,
+                      uint pinCLK,
+                      uint pinLAT)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinData, 6, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinCLK, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinLAT, 1, true);
+
+    for (int i = 0; i < 6; ++i)
+    {
+        pio_gpio_init(pio, pinData + i);
+    }
+    pio_gpio_init(pio, pinCLK + 0);
+    pio_gpio_init(pio, pinLAT + 0);
+
+    pio_sm_config c = led_command_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pinData, 6);
+    sm_config_set_set_pins(&c, pinLAT, 1);
+    sm_config_set_sideset_pins(&c, pinCLK);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, false);
+}
+%}
+
+
+; ----------------------------------
+; LEDに画像データを送る
+;
+; out:
+;  - R1 R2
+; side set:
+;  - CLK
+;  - FFCLK
+; set:
+;  - LAT
+;
+; side set, set を指定しない事で ch1, 2 も同じprogramを共用する
+; isr に ピクセルあたりの bit 数 - 1 を入れて実行
+
+.program led_data
+.side_set 2
+
+    ; 12.5MHz の周期 80ns
+    ; ICD2163のTsu_SDI, Thd_SDI の値は不明だが16nsでいけるとして
+    ; 125MHz の周期 8ns
+    ; 8 * 6 + 16 + 16
+    ;
+    ; Data : 0 1 2 3   0 1 2 3   0   1 2 3 
+    ; FFCLK: _-_-_-_____-_-_-_____-___-_-_____  
+    ; DCLK : ________--________--__________---
+    ; LAT  : ______________________----------_
+
+    ; CPU側は
+    ;  - DMA を開始する
+    ;  - FIFO が埋まったのを確認する
+    ;  - irq0 が立っているのを確認
+    ;  - irq0 をクリアする
+
+pre_loop:
+    ; データが FIFO にない時はクロックを出し続ける
+    jmp !osre start     side 0b00   [5]
+    jmp pre_loop        side 0b01   [5]
+
+start:
+    irq wait 0          side 0b00
+    out y, 32           side 0b00   ; pixel count - 1
+
+loop_pixel:
+    mov x, isr          side 0b00   ; bits/pixel - 1
+loop_bit:
+    out pins, 2         side 0b00
+    jmp !x, last        side 0b10   ; 最後のループだけ LAT 1 にする
+last_ret:
+    out pins, 2         side 0b00
+    nop                 side 0b10
+    out pins, 2         side 0b00
+    nop                 side 0b10
+    out pins, 2         side 0b00   [3]
+    jmp x-- loop_bit    side 0b01   [1]
+  
+    set pins, 0         side 0b01
+    jmp y-- loop_pixel  side 0b01
+.wrap
+
+last:
+    set pins, 1         side 0b00
+    jmp last_ret        side 0b00
+

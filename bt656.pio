@@ -1,0 +1,43 @@
+;
+.program capture_bt656
+.define PIN_CLOCK 9
+
+    ; 28.67MHzは34.88ns間隔
+    ; duty 50:50 として 17.44ns 幅
+
+    out y, 32                   ; y = SAV, osr = transfer size
+    ; SAVのあと 50ns程度以内に transfer size を投入する必要がある
+    ; 10cycle以内くらい
+    
+    wait 0 pin PIN_CLOCK
+loop0:
+    wait 1 pin PIN_CLOCK
+    in pins, 8
+    mov isr, isr                ; auto push counter = 0
+    wait 0 pin PIN_CLOCK
+    mov x, isr
+    jmp x!=y, loop0
+
+    wait 1 pin PIN_CLOCK
+    in pins, 8
+    mov x, osr                  ; transfer size - 1
+
+loop1:
+    wait 0 pin PIN_CLOCK
+    wait 1 pin PIN_CLOCK
+    in pins, 8
+    jmp x--, loop1
+
+    out null, 32
+
+; 16 inst
+
+
+
+
+
+
+
+
+
+
