@@ -30,34 +30,44 @@ namespace
 
 }
 
+static constexpr uint32_t CPU_CLOCK_KHZ = 250000;
+
 // LED data
-static constexpr uint32_t PIN_B1 = 4;
-static constexpr uint32_t PIN_B2 = 5;
-static constexpr uint32_t PIN_R1 = 6;
-static constexpr uint32_t PIN_G1 = 7;
-static constexpr uint32_t PIN_R2 = 8;
-static constexpr uint32_t PIN_G2 = 9;
-static constexpr uint32_t PIN_RGB_TOP = PIN_B1;
+static constexpr uint32_t PIN_R1 = 4;
+static constexpr uint32_t PIN_R2 = 5;
+static constexpr uint32_t PIN_G1 = 6;
+static constexpr uint32_t PIN_G2 = 7;
+static constexpr uint32_t PIN_B1 = 8;
+static constexpr uint32_t PIN_B2 = 9;
+static constexpr uint32_t PIN_RGB_TOP = PIN_R1;
 
 // row select
-static constexpr uint32_t PIN_A = 16;
-static constexpr uint32_t PIN_C = 17;
-static constexpr uint32_t PIN_B_1 = 18;
-static constexpr uint32_t PIN_B_2 = 19;
-static constexpr uint32_t PIN_B_3 = 20;
-static constexpr uint32_t PIN_B_4 = 21;
+static constexpr uint32_t PIN_A = 10;
+static constexpr uint32_t PIN_B = 11;
+static constexpr uint32_t PIN_C = 12;
 
 // control
-static constexpr uint32_t PIN_CLK = 14;
-static constexpr uint32_t PIN_OE = 15;
-static constexpr uint32_t PIN_LAT_1 = 10;
-static constexpr uint32_t PIN_LAT_2 = 11;
-static constexpr uint32_t PIN_LAT_3 = 12;
-static constexpr uint32_t PIN_LAT_4 = 13;
+static constexpr uint32_t PIN_CLK = 2;
+static constexpr uint32_t PIN_FFCLK = 3;
+static constexpr uint32_t PIN_OE = 13;
+static constexpr uint32_t PIN_LAT = 28;
 
-static constexpr auto PIN_B = PIN_B_1;
-static constexpr auto PIN_LAT = PIN_LAT_1;
+// BT656
+static constexpr uint32_t PIN_VD0 = 14;
+static constexpr uint32_t PIN_VD1 = 15;
+static constexpr uint32_t PIN_VD2 = 16;
+static constexpr uint32_t PIN_VD3 = 17;
+static constexpr uint32_t PIN_VD4 = 18;
+static constexpr uint32_t PIN_VD5 = 19;
+static constexpr uint32_t PIN_VD6 = 20;
+static constexpr uint32_t PIN_VD7 = 21;
+static constexpr uint32_t PIN_VCLK = 22;
 
+// I2C
+static constexpr uint32_t PIN_SDA = 26;
+static constexpr uint32_t PIN_SCL = 27;
+
+//
 static constexpr int UNIT_WIDTH = 16;
 static constexpr int N_CASCADE = 10; // 16 * 10
 static constexpr int N_SCAN_LINES = 60;
@@ -78,8 +88,10 @@ static constexpr int SM_DATA2 = 1;
 static constexpr int SM_DATA3 = 2;
 static constexpr int SM_COMMAND = 3;
 static constexpr int SM_PWM = 0;
+static constexpr int SM_VIDEO_IN = 1;
 
 uint ofsPWM;
+uint ofsVideoIn;
 uint ofsData1;
 uint ofsData23;
 uint ofsCommand;
@@ -87,23 +99,22 @@ uint ofsCommand;
 void initPIO()
 {
     ofsPWM = pio_add_program(pioPWM_, &led_pwm_program);
-    ofsData1 = pio_add_program(pioDataCmd_, &led_data1_program);
-    ofsData23 = pio_add_program(pioDataCmd_, &led_data23_program);
+    ofsData1 = pio_add_program(pioDataCmd_, &led_data_program);
+    ofsData23 = pio_add_program(pioDataCmd_, &led_data_program);
     ofsCommand = pio_add_program(pioDataCmd_, &led_command_program);
-    initProgramLEDPWM(pioPWM_, SM_PWM, ofsPWM, PIN_A, PIN_B_1, PIN_OE);
+    initProgramLEDPWM(pioPWM_, SM_PWM, ofsPWM, PIN_A, PIN_OE);
 
-    initProgramLEDData1(pioDataCmd_, SM_DATA1, ofsData1, PIN_B1, PIN_CLK, PIN_LAT_1);
-    initProgramLEDData23(pioDataCmd_, SM_DATA2, ofsData23, PIN_R1);
-    initProgramLEDData23(pioDataCmd_, SM_DATA3, ofsData23, PIN_R2);
-    initProgramLEDCommand(pioDataCmd_, SM_COMMAND, ofsCommand, PIN_RGB_TOP, PIN_CLK, PIN_LAT_1);
-    // B1B2, R1G1, R2G2
+    initProgramLEDData1(pioDataCmd_, SM_DATA1, ofsData1, PIN_R1, PIN_CLK, PIN_LAT);
+    initProgramLEDData23(pioDataCmd_, SM_DATA2, ofsData23, PIN_G1);
+    initProgramLEDData23(pioDataCmd_, SM_DATA3, ofsData23, PIN_B1);
+    initProgramLEDCommand(pioDataCmd_, SM_COMMAND, ofsCommand, PIN_RGB_TOP, PIN_CLK, PIN_LAT);
 
-    int clkdiv = 10;
+    static constexpr int clkdiv = CPU_CLOCK_KHZ / 25000;
     pio_sm_set_clkdiv_int_frac(pioPWM_, SM_PWM, clkdiv, 0);
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA1, clkdiv, 0);
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA2, clkdiv, 0);
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA3, clkdiv, 0);
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_COMMAND, clkdiv, 0);
+    // pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA1, clkdiv, 0);
+    // pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA2, clkdiv, 0);
+    // pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA3, clkdiv, 0);
+    // pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_COMMAND, clkdiv, 0);
 
     gpio_set_slew_rate(PIN_R1, GPIO_SLEW_RATE_FAST);
     gpio_set_slew_rate(PIN_G1, GPIO_SLEW_RATE_FAST);
@@ -113,18 +124,13 @@ void initPIO()
     gpio_set_slew_rate(PIN_B2, GPIO_SLEW_RATE_FAST);
 
     gpio_set_slew_rate(PIN_A, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(PIN_B_1, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(PIN_B_2, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(PIN_B_3, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(PIN_B_4, GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(PIN_B, GPIO_SLEW_RATE_FAST);
     gpio_set_slew_rate(PIN_C, GPIO_SLEW_RATE_FAST);
 
     gpio_set_slew_rate(PIN_CLK, GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(PIN_FFCLK, GPIO_SLEW_RATE_FAST);
     gpio_set_slew_rate(PIN_OE, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(PIN_LAT_1, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(PIN_LAT_2, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(PIN_LAT_3, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(PIN_LAT_4, GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(PIN_LAT, GPIO_SLEW_RATE_FAST);
 }
 
 static constexpr int dmaChData1 = 0;
@@ -645,7 +651,7 @@ int main()
 {
     vreg_set_voltage(VREG_VOLTAGE_1_20);
     sleep_ms(10);
-    set_sys_clock_khz(250000, true);
+    set_sys_clock_khz(CPU_CLOCK_KHZ, true);
     stdio_init_all();
 
     constexpr uint LED_PIN = PICO_DEFAULT_LED_PIN;
