@@ -21,20 +21,20 @@ loop_pwm:
     nop                     side 1
     jmp x--, loop_pwm       side 0
 
-    nop                     side 0  [15]
+    set pins, 0b010         side 0  [15]
     set pins, 0b011         side 0  [15]
     set pins, 0b000         side 0
     jmp y--, loop_line      side 0
 
     ;
-    nop                     side 0  [2]
+    mov x, isr              side 0  [2]
 loop_pwm2:
     nop                     side 1
     jmp x--, loop_pwm2      side 0
 
-    nop                     side 0  [15]
+    set pins, 0b110         side 0  [15]
     set pins, 0b111         side 0  [15]
-    set pins, 0b100         side 0
+    set pins, 0b000         side 0
 
 % c-sdk {
 static inline void
@@ -84,7 +84,7 @@ loop0_:
     set pins, 0     side 0b00
     jmp y-- loop0_  side 0b10
     nop             side 0b00 [1]
-    jmp x-- loop0   side 0b01 [1]
+    jmp x-- loop0   side 0b01 [2]
 
     ; LAT = 1
     mov x, isr      side 0b00
@@ -95,8 +95,12 @@ loop1_:
     set pins, 1     side 0b00
     jmp y-- loop1_  side 0b10
     nop             side 0b00 [1]
-    jmp x-- loop1   side 0b01 [1]
+    jmp x-- loop1   side 0b01 [2]
 
+    ; 立ち上がったままのLATをC側で戻す事
+    
+    ; LAT も side set に入れるのを検討できるようにピンを並べておいた方がいい
+    ; OEといれかえ
 
 % c-sdk {
 static inline void
@@ -155,6 +159,7 @@ initProgramLEDCommand(PIO pio, uint sm, uint offset,
     ; LAT  : ______________________----------_
 
     ; CPU側は
+    ;  - FIFO が空になったのを確認する
     ;  - DMA を開始する
     ;  - FIFO が埋まったのを確認する
     ;  - irq0 が立っているのを確認
@@ -162,12 +167,12 @@ initProgramLEDCommand(PIO pio, uint sm, uint offset,
 
 pre_loop:
     ; データが FIFO にない時はクロックを出し続ける
-    jmp !osre start     side 0b00   [5]
-    jmp pre_loop        side 0b01   [5]
+    jmp !osre start     side 0b00   [4]
+    jmp pre_loop        side 0b01   [4]
 
 start:
     irq wait 0          side 0b00
-    out y, 32           side 0b00   ; pixel count - 1
+    out y, 32           side 0b00   ; 16 - 1
 
 loop_pixel:
     mov x, isr          side 0b00   ; bits/pixel - 1
@@ -179,8 +184,8 @@ last_ret:
     nop                 side 0b10
     out pins, 2         side 0b00
     nop                 side 0b10
-    out pins, 2         side 0b00   [3]
-    jmp x-- loop_bit    side 0b01   [1]
+    out pins, 2         side 0b00   [3] ; setup 32ns 必要
+    jmp x-- loop_bit    side 0b01   [3] ; hold  32ns 必要
   
     set pins, 0         side 0b01
     jmp y-- loop_pixel  side 0b01

@@ -10,8 +10,9 @@
 #include <hardware/vreg.h>
 #include <vector>
 #include <array>
-#include <assert.h>
+#include <cassert>
 #include <cstdio>
+#include <cstring>
 
 #include <led.pio.h>
 #include <bt656.pio.h>
@@ -71,6 +72,8 @@ static constexpr uint32_t PIN_SCL = 27;
 static constexpr int UNIT_WIDTH = 16;
 static constexpr int N_CASCADE = 10; // 16 * 10
 static constexpr int N_SCAN_LINES = 60;
+static constexpr int BPP = 16;
+static constexpr int PWM_PULSE_PER_LINE = 74;
 
 #if 0
 #define SLEEP sleep_us(0)
@@ -90,31 +93,34 @@ static constexpr int SM_COMMAND = 3;
 static constexpr int SM_PWM = 0;
 static constexpr int SM_VIDEO_IN = 1;
 
+static constexpr int PIOIRQ_DATAIDLE = 0;
+
 uint ofsPWM;
 uint ofsVideoIn;
-uint ofsData1;
-uint ofsData23;
+uint ofsData;
 uint ofsCommand;
 
 void initPIO()
 {
     ofsPWM = pio_add_program(pioPWM_, &led_pwm_program);
-    ofsData1 = pio_add_program(pioDataCmd_, &led_data_program);
-    ofsData23 = pio_add_program(pioDataCmd_, &led_data_program);
+    ofsData = pio_add_program(pioDataCmd_, &led_data_program);
     ofsCommand = pio_add_program(pioDataCmd_, &led_command_program);
+    printf("pwm:%d, data:%d, cmd:%d\n", ofsPWM, ofsData, ofsCommand);
+
     initProgramLEDPWM(pioPWM_, SM_PWM, ofsPWM, PIN_A, PIN_OE);
 
-    initProgramLEDData1(pioDataCmd_, SM_DATA1, ofsData1, PIN_R1, PIN_CLK, PIN_LAT);
-    initProgramLEDData23(pioDataCmd_, SM_DATA2, ofsData23, PIN_G1);
-    initProgramLEDData23(pioDataCmd_, SM_DATA3, ofsData23, PIN_B1);
+    initProgramLEDData1(pioDataCmd_, SM_DATA1, ofsData, PIN_R1, PIN_CLK, PIN_LAT);
+    initProgramLEDData23(pioDataCmd_, SM_DATA2, ofsData, PIN_G1);
+    initProgramLEDData23(pioDataCmd_, SM_DATA3, ofsData, PIN_B1);
     initProgramLEDCommand(pioDataCmd_, SM_COMMAND, ofsCommand, PIN_RGB_TOP, PIN_CLK, PIN_LAT);
 
-    static constexpr int clkdiv = CPU_CLOCK_KHZ / 25000;
-    pio_sm_set_clkdiv_int_frac(pioPWM_, SM_PWM, clkdiv, 0);
-    // pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA1, clkdiv, 0);
-    // pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA2, clkdiv, 0);
-    // pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA3, clkdiv, 0);
-    // pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_COMMAND, clkdiv, 0);
+    static constexpr int clkdiv25 = CPU_CLOCK_KHZ / 25000;
+    pio_sm_set_clkdiv_int_frac(pioPWM_, SM_PWM, clkdiv25, 0);
+    static constexpr int clkdiv125 = 2;
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA1, clkdiv125, 0);
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA2, clkdiv125, 0);
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA3, clkdiv125, 0);
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_COMMAND, clkdiv125, 0);
 
     gpio_set_slew_rate(PIN_R1, GPIO_SLEW_RATE_FAST);
     gpio_set_slew_rate(PIN_G1, GPIO_SLEW_RATE_FAST);
@@ -137,9 +143,9 @@ static constexpr int dmaChData1 = 0;
 static constexpr int dmaChData2 = 1;
 static constexpr int dmaChData3 = 2;
 static constexpr int dmaChCommand = 3;
-static constexpr int dmaChChain1 = 4;
-static constexpr int dmaChChain2 = 5;
-static constexpr int dmaChChain3 = 6;
+// static constexpr int dmaChChain1 = 4;
+// static constexpr int dmaChChain2 = 5;
+// static constexpr int dmaChChain3 = 6;
 static constexpr int dmaChPWM = 7;
 
 void initDMA()
@@ -162,44 +168,42 @@ void initDMA()
                               false);
     };
 
-    initCH(dmaChData1, pioDataCmd_, SM_DATA1, dmaChChain1);
-    initCH(dmaChData2, pioDataCmd_, SM_DATA2, dmaChChain2);
-    initCH(dmaChData3, pioDataCmd_, SM_DATA3, dmaChChain3, true);
+    initCH(dmaChData1, pioDataCmd_, SM_DATA1);
+    initCH(dmaChData2, pioDataCmd_, SM_DATA2);
+    initCH(dmaChData3, pioDataCmd_, SM_DATA3);
     initCH(dmaChCommand, pioDataCmd_, SM_COMMAND);
 
-    auto initChain = [](int ch, int dataCh)
-    {
-        auto cfg = dma_channel_get_default_config(ch);
-        dma_channel_configure(ch,
-                              &cfg,
-                              &dma_channel_hw_addr(dataCh)->al3_read_addr_trig,
-                              NULL, 1,
-                              false);
-    };
+    // auto initChain = [](int ch, int dataCh)
+    // {
+    //     auto cfg = dma_channel_get_default_config(ch);
+    //     dma_channel_configure(ch,
+    //                           &cfg,
+    //                           &dma_channel_hw_addr(dataCh)->al3_read_addr_trig,
+    //                           NULL, 1,
+    //                           false);
+    // };
 
-    initChain(dmaChChain1, dmaChData1);
-    initChain(dmaChChain2, dmaChData2);
-    initChain(dmaChChain3, dmaChData3);
+    // initChain(dmaChChain1, dmaChData1);
+    // initChain(dmaChChain2, dmaChData2);
+    // initChain(dmaChChain3, dmaChData3);
 }
 
 // LED PWM の1周期ぶんの出力を開始する
-void startLEDPWM(int clocksPerLine, int nLines, int maskB)
+void startLEDPWM(int clocksPerLine, int nLines)
 {
-    maskB ^= 0xf;
     clocksPerLine -= 1;
     nLines -= 2;
 
-    uint32_t data = (maskB << 24) | (nLines << 16) | (clocksPerLine << 0);
+    uint32_t data = (nLines << 16) | (clocksPerLine << 0);
     pio_sm_put_blocking(pioPWM_, SM_PWM, data);
 }
 
-void startLEDPWM(int clocksPerLine, int nLines, int maskB, int n)
+void startLEDPWM(int clocksPerLine, int nLines, int n)
 {
-    maskB ^= 0xf;
     clocksPerLine -= 1;
     nLines -= 2;
 
-    static uint32_t dmaPWMData = (maskB << 24) | (nLines << 16) | (clocksPerLine << 0);
+    static uint32_t dmaPWMData = (nLines << 16) | (clocksPerLine << 0);
 
     auto cfg = dma_channel_get_default_config(dmaChPWM);
     channel_config_set_dreq(&cfg, pio_get_dreq(pioPWM_, SM_PWM, true /* tx */));
@@ -296,88 +300,59 @@ void finishCommandTransfer()
     }
 
     pio_sm_set_enabled(pioDataCmd_, SM_COMMAND, false);
+
+    // LAT = 0
+    pio_sm_exec(pioDataCmd_, SM_COMMAND, pio_encode_set(pio_pins, 0));
 }
 
 void setDataTransferParams(int sm, int unitW, int h, int nCascades, int bpp)
 {
-    // isr: 16 : nCascades * bpp - 2 = 10 * 16 - 2
-    // y  : 16 : unitW * h - 1 = 16 * 120 / 2 - 1
-
-    uint32_t isr = nCascades * bpp - 2;
-    uint32_t y = unitW * h - 1;
-    uint32_t data = (y << 16) | isr; // right shift
-    // uint32_t data = (isr << 16) | y; // left shift
+    // isr: nCascades * bpp - 1 = 10 * 16 - 1
+    uint32_t isr = nCascades * bpp - 1;
 
     pio_sm_set_enabled(pioDataCmd_, sm, false);
-    pio_sm_put_blocking(pioDataCmd_, sm, data);
+    pio_sm_put_blocking(pioDataCmd_, sm, isr);
     pio_sm_exec(pioDataCmd_, sm, pio_encode_pull(false, false));
-    pio_sm_exec(pioDataCmd_, sm, pio_encode_out(pio_isr, 16));
-    pio_sm_exec(pioDataCmd_, sm, pio_encode_out(pio_y, 16));
+    pio_sm_exec(pioDataCmd_, sm, pio_encode_out(pio_isr, 32));
 
     pio_sm_clear_fifos(pioDataCmd_, sm);
 }
 
 void startDataTransfer()
 {
-    setDataTransferParams(SM_DATA1, 16, N_SCAN_LINES, N_CASCADE, 16);
-    setDataTransferParams(SM_DATA2, 16, N_SCAN_LINES, N_CASCADE, 16);
-    setDataTransferParams(SM_DATA3, 16, N_SCAN_LINES, N_CASCADE, 16);
+    setDataTransferParams(SM_DATA1, UNIT_WIDTH, N_SCAN_LINES, N_CASCADE, BPP);
+    setDataTransferParams(SM_DATA2, UNIT_WIDTH, N_SCAN_LINES, N_CASCADE, BPP);
+    setDataTransferParams(SM_DATA3, UNIT_WIDTH, N_SCAN_LINES, N_CASCADE, BPP);
+
+    pio_enable_sm_mask_in_sync(pioDataCmd_, 7);
 }
 
-// void transferData(std::array<uint32_t *, 3> data, size_t size, bool first)
-// {
-//     dma_channel_wait_for_finish_blocking(dmaChData1);
-//     for (int i = 0; i < 3; ++i)
-//     {
-//         // dma_channel_wait_for_finish_blocking(dmaChData1 + i);
-
-//         dma_channel_set_trans_count(dmaChData1 + i, size, false);
-//         dma_channel_set_read_addr(dmaChData1 + i, data[i], true);
-//     }
-//     if (first)
-//     {
-//         for (int i = 0; i < 3; ++i)
-//         {
-//             while (!pio_sm_is_tx_fifo_full(pioDataCmd_, SM_DATA1 + i))
-//             {
-//                 tight_loop_contents();
-//             }
-//         }
-//         pio_enable_sm_mask_in_sync(pioDataCmd_, 7);
-//         // hw_set_bits(&pioDataCmd_->ctrl, 7u << PIO_CTRL_SM_ENABLE_LSB);
-//     }
-// }
-
-void finishDataTransfer()
+void __not_in_flash_func(waitDataTransferStalled)()
 {
-    dma_channel_wait_for_finish_blocking(dmaChChain1);
-    dma_channel_wait_for_finish_blocking(dmaChChain2);
-    dma_channel_wait_for_finish_blocking(dmaChChain3);
-
-    dma_channel_wait_for_finish_blocking(dmaChData1);
-    dma_channel_wait_for_finish_blocking(dmaChData2);
-    dma_channel_wait_for_finish_blocking(dmaChData3);
-
     resetPIOTxStalled(pioDataCmd_, SM_DATA1);
     while (!isPIOTxStalled(pioDataCmd_, SM_DATA1))
     {
         tight_loop_contents();
     }
-
-    hw_clear_bits(&pioDataCmd_->ctrl, 7u << PIO_CTRL_SM_ENABLE_LSB);
 }
 
-void sendFrameData(std::array<uint32_t **, 3> lists, size_t size)
+void __not_in_flash_func(transferData)(const std::array<uint32_t *, 3> &data, size_t size)
 {
+    // FIFO empty　まち
+    // waitDataTransferStalled();
+    while (!pio_sm_is_tx_fifo_empty(pioDataCmd_, SM_DATA1))
+    {
+        tight_loop_contents();
+    }
+
+    // DMA 開始
     for (int i = 0; i < 3; ++i)
     {
-        dma_channel_wait_for_finish_blocking(dmaChChain1 + i);
-        dma_channel_wait_for_finish_blocking(dmaChData1 + i);
         dma_channel_set_trans_count(dmaChData1 + i, size, false);
-
-        auto list = lists[i];
-        dma_channel_set_read_addr(dmaChChain1 + i, list, true);
+        dma_channel_set_read_addr(dmaChData1 + i, data[i], true);
     }
+
+    // FIFO fullまち
     for (int i = 0; i < 3; ++i)
     {
         while (!pio_sm_is_tx_fifo_full(pioDataCmd_, SM_DATA1 + i))
@@ -385,7 +360,25 @@ void sendFrameData(std::array<uint32_t **, 3> lists, size_t size)
             tight_loop_contents();
         }
     }
-    pio_enable_sm_mask_in_sync(pioDataCmd_, 7);
+
+    // IRQ0 が立つのをまつ
+    while (!pio_interrupt_get(pioDataCmd_, PIOIRQ_DATAIDLE))
+    {
+        tight_loop_contents();
+    }
+
+    // IRQ0 をクリアして転送開始
+    pio_interrupt_clear(pioDataCmd_, PIOIRQ_DATAIDLE);
+}
+
+void finishDataTransfer()
+{
+    dma_channel_wait_for_finish_blocking(dmaChData1);
+    dma_channel_wait_for_finish_blocking(dmaChData2);
+    dma_channel_wait_for_finish_blocking(dmaChData3);
+    // waitDataTransferStalled();
+
+    hw_clear_bits(&pioDataCmd_->ctrl, 7u << PIO_CTRL_SM_ENABLE_LSB);
 }
 
 ////////////////////////
@@ -411,11 +404,11 @@ struct LEDDriver
     static constexpr int TOTAL_WIDTH = MODULE_WIDTH * X_MODULES;
     static constexpr int TOTAL_HEIGHT = MODULE_HEIGHT * Y_MODULES;
     static constexpr int UNIT_DATA_BUFFER_SIZE = TOTAL_WIDTH * Y_MODULES;
-    static constexpr int N_DATA_BUFFERS = 3;
+    static constexpr int N_DATA_BUFFERS = 2;
     static constexpr int N_RGB_CH = 3;
 
-    uint32_t dataBuffer_[N_DATA_BUFFERS][N_RGB_CH][UNIT_DATA_BUFFER_SIZE + 1]; // 22.5KB
-    std::array<uint32_t *, N_SCAN_LINES + 1> chainBuffer_[3]{};
+    // 先頭 1 word がラインサイズ。1 word が guard
+    uint32_t dataBuffer_[N_DATA_BUFFERS][N_RGB_CH][UNIT_DATA_BUFFER_SIZE + 2]; // 22.5KB
 
     graphics::FrameBuffer frameBuffer_;
 
@@ -425,14 +418,6 @@ struct LEDDriver
 
         constexpr int margin_lines = 2;
         frameBuffer_.initialize(TOTAL_WIDTH, TOTAL_HEIGHT, margin_lines);
-
-        for (int i = 0; i < N_SCAN_LINES; ++i)
-        {
-            int b = i % N_DATA_BUFFERS;
-            chainBuffer_[0][i] = dataBuffer_[b][0];
-            chainBuffer_[1][i] = dataBuffer_[b][1];
-            chainBuffer_[2][i] = dataBuffer_[b][2];
-        }
 
         bmp_ = (const graphics::BMP *)MagickImage;
 
@@ -458,7 +443,7 @@ struct LEDDriver
 
     void scan()
     {
-        startLEDPWM(74, N_SCAN_LINES, 0xf);
+        startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES);
     }
 
     void scanIfStalled()
@@ -477,15 +462,11 @@ struct LEDDriver
         }
     }
 
-    int dataBufferID_ = 0;
-    int currentLine_ = 0;
     volatile bool dataTransferComplete_ = true;
 
-    void startFrameTransfer()
+    void initFrameState()
     {
-        dataBufferID_ = 0;
-        currentLine_ = 0;
-        dataTransferComplete_ = false;
+        dataTransferComplete_ = true;
     }
 
     bool isDataTransferCompleted()
@@ -493,17 +474,19 @@ struct LEDDriver
         return dataTransferComplete_;
     }
 
-    void updateDataBuffer()
+    void waitDataTransfer()
     {
-        int y = currentLine_;
-        if (y >= N_SCAN_LINES)
+        while (!isDataTransferCompleted())
         {
-            return;
+            tight_loop_contents();
         }
+    }
 
-        auto *dstR = dataBuffer_[dataBufferID_][0];
-        auto *dstG = dataBuffer_[dataBufferID_][1];
-        auto *dstB = dataBuffer_[dataBufferID_][2];
+    void __not_in_flash_func(updateDataBuffer)(int dataBufferID, int y)
+    {
+        auto *dstR = dataBuffer_[dataBufferID][0];
+        auto *dstG = dataBuffer_[dataBufferID][1];
+        auto *dstB = dataBuffer_[dataBufferID][2];
 
         int lineID0 = frameBuffer_.moveCurrentPlaneLine(y);
         int lineID1 = frameBuffer_.moveCurrentPlaneLine(y + N_SCAN_LINES * 1);
@@ -515,96 +498,76 @@ struct LEDDriver
         auto *line2 = frameBuffer_.getLineBuffer(lineID2);
         auto *line3 = frameBuffer_.getLineBuffer(lineID3);
 
-        graphics::convert4(dstR, dstG, dstB, line0, line1, line2, line3);
+        // 先頭に ラインの繰り返し数
+        dstR[0] = UNIT_WIDTH - 1;
+        dstG[0] = UNIT_WIDTH - 1;
+        dstB[0] = UNIT_WIDTH - 1;
+
+        graphics::convert4(dstR + 1, dstG + 1, dstB + 1, line0, line1, line2, line3);
 
         frameBuffer_.freeLine({lineID0, lineID1, lineID2, lineID3});
-
-        ++currentLine_;
-        if (++dataBufferID_ == N_DATA_BUFFERS)
-        {
-            dataBufferID_ = 0;
-        }
     }
 
-    void dmaIRQHandler()
+    void __not_in_flash_func(dmaIRQHandler)()
     {
         if (dma_hw->ints0 & (1 << dmaChData1))
         {
             dma_hw->ints0 = 1 << dmaChData1;
-            updateDataBuffer();
-        }
-        else if (dma_hw->ints0 & (1 << dmaChData3))
-        {
-            dma_hw->ints0 = 1 << dmaChData3;
             dataTransferComplete_ = true;
         }
     }
 
-    static void __isr dmaIRQHandlerEntry()
+    static void __isr __not_in_flash_func(dmaIRQHandlerEntry)()
     {
         LEDDriverInst_->dmaIRQHandler();
     }
 
-    void loop()
+    void __not_in_flash_func(loop)()
     {
         irq_set_exclusive_handler(DMA_IRQ_0, dmaIRQHandlerEntry);
         dma_channel_set_irq0_enabled(dmaChData1, true);
-        dma_channel_set_irq0_enabled(dmaChData3, true);
         irq_set_enabled(DMA_IRQ_0, true);
 
         int led = 0;
 
         while (1)
         {
-            // printf("led %d\n", led);
-            // dump(command0_);
-
-            // ("%d\n", __LINE__);
-
-            startFrameTransfer();
-            for (int i = 0; i < N_DATA_BUFFERS; ++i)
-            {
-                updateDataBuffer();
-            }
-
+            // まず VSync 等のコマンドを送る
             sendCommand(command0_.data(), command0_.size());
             finishCommandTransfer();
 
-            // scan();
+            // ここから scan はじめていいはず
+            startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES, 23);
+            // todo: 回数はフレームレートから計算する
 
+            // 残りのコマンドを送る
             sendCommand(command1_.data(), command1_.size());
             finishCommandTransfer();
 
-            // printf("%d\n", __LINE__);
-            // sleep_us(1);
-            startLEDPWM(74, N_SCAN_LINES, 0xf, 23);
-
-            // int pc = pio_sm_get_pc(pioDataCmd_, SM_COMMAND);
-            // printf("pc = %d\n", pc);
-
+            // データ送出の SM を開始 (DCLK 送出を開始)
+            initFrameState();
             startDataTransfer();
-            // printf("%d\n", __LINE__);
 
-            sendFrameData({chainBuffer_[0].data(),
-                           chainBuffer_[1].data(),
-                           chainBuffer_[2].data()},
-                          UNIT_DATA_BUFFER_SIZE);
-
-            while (!isDataTransferCompleted())
+            int dbid = 0;
+            for (int i = 0; i < N_SCAN_LINES; ++i)
             {
-                tight_loop_contents();
+                updateDataBuffer(dbid, i);
+                waitDataTransfer(); // DMAまち
+                dataTransferComplete_ = false;
+                transferData({dataBuffer_[dbid][0],
+                              dataBuffer_[dbid][1],
+                              dataBuffer_[dbid][2]},
+                             UNIT_DATA_BUFFER_SIZE + 1); // DMA開始
+                dbid ^= 1;
             }
-            // printf("%d\n", __LINE__);
+
+            waitDataTransfer();
             finishDataTransfer();
 
             finishLEDPWM();
             waitForScanStall();
 
-            sleep_us(1);
-            // waitForScanStall();
-
-            // printf("ct %d\n", procLine_);
-
+            // sleep_us(1);
             frameBuffer_.flipReadPlane();
 
             gpio_put(PICO_DEFAULT_LED_PIN, led);
@@ -612,7 +575,7 @@ struct LEDDriver
         }
     }
 
-    void __not_in_flash_func(main)()
+    void __not_in_flash_func(mainProc)()
     {
         int yofs = 0;
         while (1)
@@ -626,9 +589,21 @@ struct LEDDriver
             {
                 int lineID = frameBuffer_.allocateLine();
                 auto p = frameBuffer_.getLineBuffer(lineID);
-
+#if 1
+                int y2 = (y + yofs) % 240;
+                if (y2 < h)
+                {
+                    memset(p, 0, 160 * 2);
+                    graphics::convertBGRB888toBGR565(p + 160, img + stride * y2, w);
+                }
+                else
+                {
+                    memset(p, 0, 320 * 2);
+                }
+#else
                 graphics::convertBGRB888toBGR565(p, img + stride * ((y + yofs) % h), w);
                 graphics::convertBGRB888toBGR565(p + 160, img + stride * ((y + yofs) % h), w);
+#endif
                 frameBuffer_.commitNextLine(lineID);
             }
             frameBuffer_.finishPlane();
@@ -671,6 +646,6 @@ int main()
     driver_.init();
 
     multicore_launch_core1(core1_main);
-    driver_.main();
+    driver_.mainProc();
     return 0;
 }
