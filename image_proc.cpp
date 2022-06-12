@@ -70,7 +70,7 @@ namespace graphics
                     {
                         p[i] = (iv & (1 << (11 - i))) ? 0x80 : 0;
                     }
-                    printf("%2d: %04x: %08x %08x %08x\n", i, iv, dst[2], dst[1], dst[0]);
+                    // printf("%2d: %04x: %08x %08x %08x\n", i, iv, dst[2], dst[1], dst[0]);
                 };
 
                 for (int i = 0; i < 32; ++i)

@@ -309,11 +309,17 @@ void setDataTransferParams(int sm, int unitW, int h, int nCascades, int bpp)
 {
     // isr: nCascades * bpp - 1 = 10 * 16 - 1
     uint32_t isr = nCascades * bpp - 1;
+    // printf("isr %d\n", isr);
 
     pio_sm_set_enabled(pioDataCmd_, sm, false);
+
+    assert(pio_sm_is_tx_fifo_empty(pioDataCmd_, SM_DATA1));
+    // pio_sm_clear_fifos(pioDataCmd_, sm);
+
     pio_sm_put_blocking(pioDataCmd_, sm, isr);
     pio_sm_exec(pioDataCmd_, sm, pio_encode_pull(false, false));
     pio_sm_exec(pioDataCmd_, sm, pio_encode_out(pio_isr, 32));
+    // pio_sm_exec(pioDataCmd_, sm, pio_encode_jmp(ofsData));
 
     pio_sm_clear_fifos(pioDataCmd_, sm);
 }
@@ -336,14 +342,28 @@ void __not_in_flash_func(waitDataTransferStalled)()
     }
 }
 
-void __not_in_flash_func(transferData)(const std::array<uint32_t *, 3> &data, size_t size)
+void __not_in_flash_func(waitForDataFIFOEmpty)()
 {
-    // FIFO empty　まち
-    // waitDataTransferStalled();
-    while (!pio_sm_is_tx_fifo_empty(pioDataCmd_, SM_DATA1))
+    // while (!pio_sm_is_tx_fifo_empty(pioDataCmd_, SM_DATA1))
+    while (((pioDataCmd_->fstat >> PIO_FSTAT_TXEMPTY_LSB) & 7) != 7)
     {
         tight_loop_contents();
     }
+}
+
+void __not_in_flash_func(waitForDataFIFOFull)()
+{
+    // while (!pio_sm_is_tx_fifo_full(pioDataCmd_, SM_DATA1 + i))
+    while (((pioDataCmd_->fstat >> PIO_FSTAT_TXFULL_LSB) & 7) != 7)
+    {
+        tight_loop_contents();
+    }
+}
+
+void __not_in_flash_func(transferData)(const std::array<uint32_t *, 3> &data, size_t size)
+{
+    // FIFO empty　まち
+    waitForDataFIFOEmpty();
 
     // DMA 開始
     for (int i = 0; i < 3; ++i)
@@ -353,30 +373,37 @@ void __not_in_flash_func(transferData)(const std::array<uint32_t *, 3> &data, si
     }
 
     // FIFO fullまち
-    for (int i = 0; i < 3; ++i)
-    {
-        while (!pio_sm_is_tx_fifo_full(pioDataCmd_, SM_DATA1 + i))
-        {
-            tight_loop_contents();
-        }
-    }
+    waitForDataFIFOFull();
 
     // IRQ0 が立つのをまつ
-    while (!pio_interrupt_get(pioDataCmd_, PIOIRQ_DATAIDLE))
+    // while (!pio_interrupt_get(pioDataCmd_, PIOIRQ_DATAIDLE))
+    while (pioDataCmd_->irq != 7)
     {
         tight_loop_contents();
     }
 
     // IRQ0 をクリアして転送開始
-    pio_interrupt_clear(pioDataCmd_, PIOIRQ_DATAIDLE);
+    // pio_interrupt_clear(pioDataCmd_, PIOIRQ_DATAIDLE);
+    hw_set_bits(&pioDataCmd_->irq, 7);
 }
 
-void finishDataTransfer()
+void __not_in_flash_func(finishDataTransfer)()
 {
     dma_channel_wait_for_finish_blocking(dmaChData1);
     dma_channel_wait_for_finish_blocking(dmaChData2);
     dma_channel_wait_for_finish_blocking(dmaChData3);
-    // waitDataTransferStalled();
+
+    waitForDataFIFOEmpty();
+
+    // 先頭に戻っているのを確認する
+    while (1)
+    {
+        auto pc = pio_sm_get_pc(pioDataCmd_, SM_DATA1);
+        if (pc == ofsData || pc == ofsData + 1)
+        {
+            break;
+        }
+    }
 
     hw_clear_bits(&pioDataCmd_->ctrl, 7u << PIO_CTRL_SM_ENABLE_LSB);
 }
@@ -439,6 +466,14 @@ struct LEDDriver
 
         makeSimpleCommand(command1_, 8, 14);
         makeCommand(command1_, 168, 2, 0x0000, 0x0000, 0x0000); // debug
+
+        printf("dataBuffer (%p, %p, %p) (%p, %p, %p)\n",
+               dataBuffer_[0][0],
+               dataBuffer_[0][1],
+               dataBuffer_[0][2],
+               dataBuffer_[1][0],
+               dataBuffer_[1][1],
+               dataBuffer_[1][2]);
     }
 
     void scan()
@@ -474,7 +509,7 @@ struct LEDDriver
         return dataTransferComplete_;
     }
 
-    void waitDataTransfer()
+    void __not_in_flash_func(waitDataTransfer)()
     {
         while (!isDataTransferCompleted())
         {
@@ -532,6 +567,9 @@ struct LEDDriver
 
         while (1)
         {
+            static int frame = 0;
+            printf("frame %d\n", frame++);
+
             // まず VSync 等のコマンドを送る
             sendCommand(command0_.data(), command0_.size());
             finishCommandTransfer();
@@ -561,11 +599,12 @@ struct LEDDriver
                 dbid ^= 1;
             }
 
-            waitDataTransfer();
-            finishDataTransfer();
-
             finishLEDPWM();
             waitForScanStall();
+
+            waitDataTransfer();
+            finishDataTransfer();
+            assert(dataTransferComplete_);
 
             // sleep_us(1);
             frameBuffer_.flipReadPlane();
@@ -590,6 +629,7 @@ struct LEDDriver
                 int lineID = frameBuffer_.allocateLine();
                 auto p = frameBuffer_.getLineBuffer(lineID);
 #if 1
+#if 1
                 int y2 = (y + yofs) % 240;
                 if (y2 < h)
                 {
@@ -603,6 +643,7 @@ struct LEDDriver
 #else
                 graphics::convertBGRB888toBGR565(p, img + stride * ((y + yofs) % h), w);
                 graphics::convertBGRB888toBGR565(p + 160, img + stride * ((y + yofs) % h), w);
+#endif
 #endif
                 frameBuffer_.commitNextLine(lineID);
             }
