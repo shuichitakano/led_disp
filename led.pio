@@ -83,8 +83,8 @@ loop0:
 loop0_:
     set pins, 0     side 0b00
     jmp y-- loop0_  side 0b10
-    nop             side 0b00 [1]
-    jmp x-- loop0   side 0b01 [2]
+    nop             side 0b00 [7]
+    jmp x-- loop0   side 0b01 [7]
 
     ; LAT = 1
     mov x, isr      side 0b00
@@ -94,8 +94,8 @@ loop1:
 loop1_:
     set pins, 1     side 0b00
     jmp y-- loop1_  side 0b10
-    nop             side 0b00 [1]
-    jmp x-- loop1   side 0b01 [2]
+    nop             side 0b00 [7]
+    jmp x-- loop1   side 0b01 [7]
 
     ; 立ち上がったままのLATをC側で戻す事
     
@@ -149,9 +149,10 @@ initProgramLEDCommand(PIO pio, uint sm, uint offset,
 .side_set 2
 
     ; 12.5MHz の周期 80ns
-    ; ICD2163のTsu_SDI, Thd_SDI の値は不明だが16nsでいけるとして
-    ; 125MHz の周期 8ns
-    ; 8 * 6 + 16 + 16
+    ; ICD2163のTsu_SDI, Thd_SDI の値は不明だが 32ns 程度でいけるとして
+    ; 250MHz の周期 4ns
+    ; 4 * 6 + 36 + 32 = 92
+    ; 1/(160*120*16/2*(92*10^-9)) = 70.76Hz
     ;
     ; Data : 0 1 2 3   0 1 2 3   0   1 2 3 
     ; FFCLK: _-_-_-_____-_-_-_____-___-_-_____  
@@ -165,10 +166,12 @@ initProgramLEDCommand(PIO pio, uint sm, uint offset,
     ;  - irq0 が立っているのを確認
     ;  - irq0 をクリアする
 
+    ; 
+
 pre_loop:
     ; データが FIFO にない時はクロックを出し続ける
-    jmp !osre start     side 0b00   [4]
-    jmp pre_loop        side 0b01   [4]
+    jmp !osre start     side 0b00   [7]
+    jmp pre_loop        side 0b01   [7]
 
 start:
     irq wait 0 rel      side 0b00
@@ -184,9 +187,9 @@ last_ret:
     out pins, 2         side 0b00
     nop                 side 0b10
     out pins, 2         side 0b00
-    nop                 side 0b10
-    out pins, 2         side 0b00   [3] ; setup 32ns 必要
-    jmp x-- loop_bit    side 0b01   [3] ; hold  32ns 必要
+    nop                 side 0b10   [1]
+    out pins, 2         side 0b00   [7] ; setup 36ns 必要?
+    jmp x-- loop_bit    side 0b01   [7] ; hold  32ns 必要?
   
     set pins, 0         side 0b01
     jmp y-- loop_pixel  side 0b01

@@ -76,6 +76,13 @@ namespace graphics
         __sev();
     }
 
+    uint16_t *
+    FrameBuffer::getWritePlaneLineUnsafe(int y)
+    {
+        assert(y < getWritePlane().size());
+        return getLineBuffer(getWritePlane()[y]);
+    }
+
     // 指定ラインを取り出し
     int
     FrameBuffer::moveCurrentPlaneLine(int y)
