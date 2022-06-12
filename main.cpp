@@ -8,6 +8,7 @@
 #include <hardware/gpio.h>
 #include <hardware/irq.h>
 #include <hardware/vreg.h>
+#include <hardware/divider.h>
 #include <vector>
 #include <array>
 #include <cassert>
@@ -20,14 +21,13 @@
 #include "image_proc.h"
 #include "bmp.h"
 #include "framebuffer.h"
+#include "util.h"
 
 namespace
 {
-    constexpr uint8_t fontData_[] = {
-#include "font.h"
-    };
 
-#include "test.h"
+    //#include "test.h"
+#include "test_320x240.h"
 
 }
 
@@ -116,11 +116,11 @@ void initPIO()
 
     static constexpr int clkdiv25 = CPU_CLOCK_KHZ / 25000;
     pio_sm_set_clkdiv_int_frac(pioPWM_, SM_PWM, clkdiv25, 0);
-    static constexpr int clkdiv125 = 2;
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA1, clkdiv125, 0);
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA2, clkdiv125, 0);
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA3, clkdiv125, 0);
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_COMMAND, clkdiv125, 0);
+    static constexpr int clkdiv250 = 1;
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA1, clkdiv250, 0);
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA2, clkdiv250, 0);
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA3, clkdiv250, 0);
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_COMMAND, clkdiv250, 0);
 
     gpio_set_slew_rate(PIN_R1, GPIO_SLEW_RATE_FAST);
     gpio_set_slew_rate(PIN_G1, GPIO_SLEW_RATE_FAST);
@@ -189,7 +189,7 @@ void initDMA()
 }
 
 // LED PWM の1周期ぶんの出力を開始する
-void startLEDPWM(int clocksPerLine, int nLines)
+void __not_in_flash_func(startLEDPWM)(int clocksPerLine, int nLines)
 {
     clocksPerLine -= 1;
     nLines -= 2;
@@ -198,7 +198,7 @@ void startLEDPWM(int clocksPerLine, int nLines)
     pio_sm_put_blocking(pioPWM_, SM_PWM, data);
 }
 
-void startLEDPWM(int clocksPerLine, int nLines, int n)
+void __not_in_flash_func(startLEDPWM)(int clocksPerLine, int nLines, int n)
 {
     clocksPerLine -= 1;
     nLines -= 2;
@@ -213,13 +213,13 @@ void startLEDPWM(int clocksPerLine, int nLines, int n)
                           &dmaPWMData, n, true);
 }
 
-void finishLEDPWM()
+void __not_in_flash_func(finishLEDPWM)()
 {
     dma_channel_wait_for_finish_blocking(dmaChPWM);
 }
 
 // Commandの出力を開始する
-void sendCommand(const uint32_t *cmdBits, size_t size)
+void __not_in_flash_func(sendCommand)(const uint32_t *cmdBits, size_t size)
 {
     pio_sm_set_enabled(pioDataCmd_, SM_COMMAND, true);
 
@@ -268,28 +268,28 @@ void makeCommand(std::vector<uint32_t> &dst, int nBits, int nH, int r, int g, in
     assert((char *)p <= (char *)(dst.data() + dst.size()));
 }
 
-void resetPIOTxStalled(PIO pio, uint sm)
+void __not_in_flash_func(resetPIOTxStalled)(PIO pio, uint sm)
 {
     pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
 }
 
-bool isPIOTxStalled(PIO pio, uint sm)
+bool __not_in_flash_func(isPIOTxStalled)(PIO pio, uint sm)
 {
     return pio->fdebug & (1u << (PIO_FDEBUG_TXSTALL_LSB + sm));
 }
 
-bool isLEDPWMStalled()
+bool __not_in_flash_func(isLEDPWMStalled)()
 {
     // return pio_sm_is_exec_stalled(pioPWM_, SM_PWM);
     return isPIOTxStalled(pioPWM_, SM_PWM);
 }
 
-bool isCommandTransferStalled()
+bool __not_in_flash_func(isCommandTransferStalled)()
 {
     return isPIOTxStalled(pioDataCmd_, SM_COMMAND);
 }
 
-void finishCommandTransfer()
+void __not_in_flash_func(finishCommandTransfer)()
 {
     dma_channel_wait_for_finish_blocking(dmaChCommand);
 
@@ -305,7 +305,7 @@ void finishCommandTransfer()
     pio_sm_exec(pioDataCmd_, SM_COMMAND, pio_encode_set(pio_pins, 0));
 }
 
-void setDataTransferParams(int sm, int unitW, int h, int nCascades, int bpp)
+void __not_in_flash_func(setDataTransferParams)(int sm, int unitW, int h, int nCascades, int bpp)
 {
     // isr: nCascades * bpp - 1 = 10 * 16 - 1
     uint32_t isr = nCascades * bpp - 1;
@@ -324,7 +324,7 @@ void setDataTransferParams(int sm, int unitW, int h, int nCascades, int bpp)
     pio_sm_clear_fifos(pioDataCmd_, sm);
 }
 
-void startDataTransfer()
+void __not_in_flash_func(startDataTransfer)()
 {
     setDataTransferParams(SM_DATA1, UNIT_WIDTH, N_SCAN_LINES, N_CASCADE, BPP);
     setDataTransferParams(SM_DATA2, UNIT_WIDTH, N_SCAN_LINES, N_CASCADE, BPP);
@@ -476,12 +476,12 @@ struct LEDDriver
                dataBuffer_[1][2]);
     }
 
-    void scan()
+    void __not_in_flash_func(scan)()
     {
         startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES);
     }
 
-    void scanIfStalled()
+    void __not_in_flash_func(scanIfStalled)()
     {
         if (isLEDPWMStalled())
         {
@@ -489,7 +489,7 @@ struct LEDDriver
         }
     }
 
-    void waitForScanStall()
+    void __not_in_flash_func(waitForScanStall)()
     {
         while (!isLEDPWMStalled())
         {
@@ -499,12 +499,12 @@ struct LEDDriver
 
     volatile bool dataTransferComplete_ = true;
 
-    void initFrameState()
+    void __not_in_flash_func(initFrameState)()
     {
         dataTransferComplete_ = true;
     }
 
-    bool isDataTransferCompleted()
+    bool __not_in_flash_func(isDataTransferCompleted)()
     {
         return dataTransferComplete_;
     }
@@ -568,7 +568,7 @@ struct LEDDriver
         while (1)
         {
             static int frame = 0;
-            printf("frame %d\n", frame++);
+            //            printf("frame %d\n", frame++);
 
             // まず VSync 等のコマンドを送る
             sendCommand(command0_.data(), command0_.size());
@@ -617,6 +617,9 @@ struct LEDDriver
     void __not_in_flash_func(mainProc)()
     {
         int yofs = 0;
+
+        auto prevTick = util::getSysTickCounter24();
+
         while (1)
         {
             auto w = bmp_->getWidth();
@@ -624,12 +627,34 @@ struct LEDDriver
             auto *img = (uint8_t *)bmp_->getBits() + 3 * w * (h - 1);
             int stride = -w * 3;
 
+            auto writeStatusLine = [&]
+            {
+                auto curTick = util::getSysTickCounter24();
+                auto frameTick = (prevTick - curTick) & 0xffffff;
+                auto fps16 = hw_divider_u32_quotient_inlined(CPU_CLOCK_KHZ * 1000 * 16, frameTick);
+                prevTick = curTick;
+
+                char str[41];
+                int nch = snprintf(str, sizeof(str),
+                                   "%d %d.%dFPS",
+                                   yofs,
+                                   fps16 >> 4, ((fps16 & 15) * 10) >> 4);
+                int xofs = 320 - 2 - nch * 8;
+                for (int i = 0; i < 8; ++i)
+                {
+                    auto *p = frameBuffer_.getWritePlaneLineUnsafe(240 - 2 - 8 + i);
+                    graphics::compositeFont(p, xofs, 320, i, str);
+                }
+            };
+
             for (int y = 0; y < 240; ++y)
             {
                 int lineID = frameBuffer_.allocateLine();
                 auto p = frameBuffer_.getLineBuffer(lineID);
 #if 1
 #if 1
+                graphics::convertBGRB888toBGR565(p, img + stride * ((y + yofs) % h), w);
+#elif 1
                 int y2 = (y + yofs) % 240;
                 if (y2 < h)
                 {
@@ -645,8 +670,15 @@ struct LEDDriver
                 graphics::convertBGRB888toBGR565(p + 160, img + stride * ((y + yofs) % h), w);
 #endif
 #endif
+                if (y == 239)
+                {
+                    // commit前にやらないといけない
+                    writeStatusLine();
+                }
+
                 frameBuffer_.commitNextLine(lineID);
             }
+
             frameBuffer_.finishPlane();
 
             ++yofs;
@@ -669,6 +701,8 @@ int main()
     sleep_ms(10);
     set_sys_clock_khz(CPU_CLOCK_KHZ, true);
     stdio_init_all();
+
+    util::initSysTick();
 
     constexpr uint LED_PIN = PICO_DEFAULT_LED_PIN;
 

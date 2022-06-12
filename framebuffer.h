@@ -29,6 +29,8 @@ namespace graphics
 
         void flipReadPlane();
 
+        uint16_t *getWritePlaneLineUnsafe(int y);
+
     protected:
         Plane &getWritePlane() { return planes_[writePlaneID_]; }
         Plane &getReadPlane() { return planes_[readPlaneID_]; }

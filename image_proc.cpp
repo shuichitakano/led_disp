@@ -25,6 +25,10 @@ namespace graphics
 {
     namespace
     {
+        constexpr uint8_t fontData_[] = {
+#include "font.h"
+        };
+
         // uint32_t interleave0(uint16_t v)
         // {
         //     uint32_t r = 0;
@@ -334,6 +338,26 @@ namespace graphics
             *dst = v;
             src += 3;
             ++dst;
+        }
+    }
+
+    void __not_in_flash_func(compositeFont)(uint16_t *line, int x, int w, int yofs, const char *str)
+    {
+        if (x < 0)
+            x = 0;
+        auto p = line + x;
+        auto end = p + w;
+        while (char ch = *str++)
+        {
+            auto d = fontData_[ch * 8 + yofs];
+
+            for (int i = 0; i < 8; ++i)
+            {
+                if (p < end)
+                {
+                    *p++ = (d & (0x80 >> i)) ? 0xffff : 0;
+                }
+            }
         }
     }
 }
