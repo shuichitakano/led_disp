@@ -171,8 +171,9 @@ pre_loop:
     jmp pre_loop        side 0b01   [4]
 
 start:
-    irq wait 0          side 0b00
+    irq wait 0 rel      side 0b00
     out y, 32           side 0b00   ; 16 - 1
+    ; set y, 15 side 0
 
 loop_pixel:
     mov x, isr          side 0b00   ; bits/pixel - 1

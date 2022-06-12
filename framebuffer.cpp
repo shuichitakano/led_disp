@@ -31,7 +31,7 @@ namespace graphics
     uint16_t *
     FrameBuffer::getLineBuffer(int lineID)
     {
-        assert(lineID < nLines_);
+        assert(lineID >= 0 && lineID < nLines_);
         return pixelBuffer_.data() + width_ * lineID;
     }
 
@@ -46,6 +46,7 @@ namespace graphics
                 {
                     int r = freeLines_.back();
                     freeLines_.pop_back();
+                    assert(r >= 0);
                     return r;
                 }
             }
