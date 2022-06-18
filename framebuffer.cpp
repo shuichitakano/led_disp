@@ -80,7 +80,8 @@ namespace graphics
     FrameBuffer::getWritePlaneLineUnsafe(int y)
     {
         assert(y < getWritePlane().size());
-        return getLineBuffer(getWritePlane()[y]);
+        auto i = getWritePlane()[y];
+        return i < 0 ? nullptr : getLineBuffer(i);
     }
 
     // 指定ラインを取り出し

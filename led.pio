@@ -187,7 +187,7 @@ last_ret:
     out pins, 2         side 0b00
     nop                 side 0b10
     out pins, 2         side 0b00
-    nop                 side 0b10   [1]
+    nop                 side 0b10
     out pins, 2         side 0b00   [7] ; setup 36ns 必要?
     jmp x-- loop_bit    side 0b01   [7] ; hold  32ns 必要?
   

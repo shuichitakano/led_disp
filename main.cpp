@@ -25,33 +25,31 @@
 
 namespace
 {
-
     //#include "test.h"
 #include "test_320x240.h"
-
 }
 
 static constexpr uint32_t CPU_CLOCK_KHZ = 250000;
 
 // LED data
-static constexpr uint32_t PIN_R1 = 4;
-static constexpr uint32_t PIN_R2 = 5;
-static constexpr uint32_t PIN_G1 = 6;
-static constexpr uint32_t PIN_G2 = 7;
-static constexpr uint32_t PIN_B1 = 8;
-static constexpr uint32_t PIN_B2 = 9;
+static constexpr uint32_t PIN_R1 = 8;
+static constexpr uint32_t PIN_R2 = 9;
+static constexpr uint32_t PIN_G1 = 10;
+static constexpr uint32_t PIN_G2 = 11;
+static constexpr uint32_t PIN_B1 = 12;
+static constexpr uint32_t PIN_B2 = 13;
 static constexpr uint32_t PIN_RGB_TOP = PIN_R1;
 
 // row select
-static constexpr uint32_t PIN_A = 10;
-static constexpr uint32_t PIN_B = 11;
-static constexpr uint32_t PIN_C = 12;
+static constexpr uint32_t PIN_A = 5;
+static constexpr uint32_t PIN_B = 6;
+static constexpr uint32_t PIN_C = 7;
 
 // control
 static constexpr uint32_t PIN_CLK = 2;
 static constexpr uint32_t PIN_FFCLK = 3;
-static constexpr uint32_t PIN_OE = 13;
-static constexpr uint32_t PIN_LAT = 28;
+static constexpr uint32_t PIN_LAT = 4;
+static constexpr uint32_t PIN_OE = 28;
 
 // BT656
 static constexpr uint32_t PIN_VD0 = 14;
@@ -103,11 +101,13 @@ uint ofsCommand;
 void initPIO()
 {
     ofsPWM = pio_add_program(pioPWM_, &led_pwm_program);
+    ofsVideoIn = pio_add_program(pioPWM_, &capture_bt656_program);
     ofsData = pio_add_program(pioDataCmd_, &led_data_program);
     ofsCommand = pio_add_program(pioDataCmd_, &led_command_program);
-    printf("pwm:%d, data:%d, cmd:%d\n", ofsPWM, ofsData, ofsCommand);
+    printf("pwm:%d, video:%d data:%d, cmd:%d\n", ofsPWM, ofsVideoIn, ofsData, ofsCommand);
 
     initProgramLEDPWM(pioPWM_, SM_PWM, ofsPWM, PIN_A, PIN_OE);
+    initProgramCaptureBT656(pioPWM_, SM_VIDEO_IN, ofsVideoIn, PIN_VD0);
 
     initProgramLEDData1(pioDataCmd_, SM_DATA1, ofsData, PIN_R1, PIN_CLK, PIN_LAT);
     initProgramLEDData23(pioDataCmd_, SM_DATA2, ofsData, PIN_G1);
@@ -137,16 +137,29 @@ void initPIO()
     gpio_set_slew_rate(PIN_FFCLK, GPIO_SLEW_RATE_FAST);
     gpio_set_slew_rate(PIN_OE, GPIO_SLEW_RATE_FAST);
     gpio_set_slew_rate(PIN_LAT, GPIO_SLEW_RATE_FAST);
+
+    gpio_set_drive_strength(PIN_A, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(PIN_B, GPIO_DRIVE_STRENGTH_8MA);
+    gpio_set_drive_strength(PIN_C, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(PIN_LAT, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(PIN_CLK, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(PIN_OE, GPIO_DRIVE_STRENGTH_12MA);
+#if 1
+    gpio_set_drive_strength(PIN_R1, GPIO_DRIVE_STRENGTH_8MA);
+    gpio_set_drive_strength(PIN_R2, GPIO_DRIVE_STRENGTH_8MA);
+    gpio_set_drive_strength(PIN_G1, GPIO_DRIVE_STRENGTH_8MA);
+    gpio_set_drive_strength(PIN_G2, GPIO_DRIVE_STRENGTH_8MA);
+    gpio_set_drive_strength(PIN_B1, GPIO_DRIVE_STRENGTH_8MA);
+    gpio_set_drive_strength(PIN_B2, GPIO_DRIVE_STRENGTH_8MA);
+#endif
 }
 
 static constexpr int dmaChData1 = 0;
 static constexpr int dmaChData2 = 1;
 static constexpr int dmaChData3 = 2;
 static constexpr int dmaChCommand = 3;
-// static constexpr int dmaChChain1 = 4;
-// static constexpr int dmaChChain2 = 5;
-// static constexpr int dmaChChain3 = 6;
-static constexpr int dmaChPWM = 7;
+static constexpr int dmaChPWM = 4;
+static constexpr int dmaChVideoIn = 5;
 
 void initDMA()
 {
@@ -186,6 +199,17 @@ void initDMA()
     // initChain(dmaChChain1, dmaChData1);
     // initChain(dmaChChain2, dmaChData2);
     // initChain(dmaChChain3, dmaChData3);
+
+    auto initIn = [](int ch, auto *pio, int sm)
+    {
+        dma_channel_config config = dma_channel_get_default_config(ch);
+        channel_config_set_dreq(&config, pio_get_dreq(pio, sm, false /* tx */));
+        channel_config_set_read_increment(&config, false);
+        channel_config_set_write_increment(&config, true);
+        dma_channel_configure(ch, &config, nullptr, &pio->rxf[sm], 0, false);
+    };
+
+    initIn(dmaChVideoIn, pioPWM_, SM_VIDEO_IN);
 }
 
 // LED PWM の1周期ぶんの出力を開始する
@@ -406,6 +430,26 @@ void __not_in_flash_func(finishDataTransfer)()
     }
 
     hw_clear_bits(&pioDataCmd_->ctrl, 7u << PIO_CTRL_SM_ENABLE_LSB);
+}
+
+void waitVideoCapture()
+{
+    resetPIOTxStalled(pioPWM_, SM_VIDEO_IN);
+    while (!isPIOTxStalled(pioPWM_, SM_VIDEO_IN))
+    {
+        tight_loop_contents();
+    }
+}
+
+void startVideoCapture(uint32_t *dst, uint32_t startCode, uint32_t transferWords)
+{
+    waitVideoCapture();
+
+    dma_channel_set_trans_count(dmaChVideoIn, transferWords, false);
+    dma_channel_set_write_addr(dmaChVideoIn, dst, true);
+
+    pio_sm_put(pioPWM_, SM_VIDEO_IN, startCode);
+    pio_sm_put(pioPWM_, SM_VIDEO_IN, transferWords * 4 - 1);
 }
 
 ////////////////////////
@@ -642,8 +686,10 @@ struct LEDDriver
                 int xofs = 320 - 2 - nch * 8;
                 for (int i = 0; i < 8; ++i)
                 {
-                    auto *p = frameBuffer_.getWritePlaneLineUnsafe(240 - 2 - 8 + i);
-                    graphics::compositeFont(p, xofs, 320, i, str);
+                    if (auto *p = frameBuffer_.getWritePlaneLineUnsafe(240 - 2 - 8 + i))
+                    {
+                        graphics::compositeFont(p, xofs, 320, i, str);
+                    }
                 }
             };
 
@@ -695,6 +741,199 @@ void __not_in_flash_func(core1_main)()
     driver_.loop();
 }
 
+#if 0
+struct VideoCapture
+{
+    static constexpr uint32_t UNIT_BUFFER_SIZE = 512;
+    static constexpr uint32_t TOTAL_BUFFER_SIZE = UNIT_BUFFER_SIZE * 2;
+
+    uint32_t buffer_[TOTAL_BUFFER_SIZE];
+
+    int dataWidthInWords_ = 0;
+    int activeLines_ = 0;
+    bool interlace_ = false;
+    uint32_t vsyncInterval256_ = 0;
+
+    static constexpr uint32_t SAV_ACTIVE_F0 = 0xff000080;
+    static constexpr uint32_t SAV_ACTIVE_F1 = 0xff0000c7;
+    static constexpr uint32_t SAV_VSYNC_F0 = 0xff0000ab;
+    static constexpr uint32_t SAV_VSYNC_F1 = 0xff0000ec;
+
+    static constexpr uint32_t EAV_ACTIVE_F0 = 0xff00009d;
+    static constexpr uint32_t EAV_ACTIVE_F1 = 0xff0000da;
+    static constexpr uint32_t EAV_VSYNC_F0 = 0xff0000b6;
+    static constexpr uint32_t EAV_VSYNC_F1 = 0xff0000f1;
+
+    uint32_t *__not_in_flash_func(getBuffer)(int dbid)
+    {
+        return &buffer_[dbid * UNIT_BUFFER_SIZE];
+    }
+
+    bool __not_in_flash_func(analyzeSignal)()
+    {
+        auto findEAV = [&]
+        {
+            for (int i = 0; i < TOTAL_BUFFER_SIZE; ++i)
+            {
+                if ((buffer_[i] & 0xffffff00) == 0xff000000)
+                {
+                    return i;
+                }
+                return -1;
+            }
+        };
+
+        auto findTimingCode = [&](const uint8_t *p, size_t size) -> std::pair<int, int>
+        {
+            for (auto i = 0u; i < size - 3; ++i)
+            {
+                if (p[i] == 0xff)
+                {
+                    if (p[i + 1] == 0 && p[i + 2] == 0)
+                    {
+                        return {p[i + 3], i};
+                    }
+                }
+            }
+            return {-1, -1};
+        };
+
+        // とりあえず映像探す
+        startVideoCapture(buffer_, SAV_ACTIVE_F0, TOTAL_BUFFER_SIZE);
+        waitVideoCapture();
+
+        auto bytebuf = static_cast<uint8_t *>(buffer_);
+
+        auto [eavActive, activeSize] = findTimingCode(bytebuf, TOTAL_BUFFER_SIZE * 4 - 4);
+        if (eavActive < 0)
+        {
+            return false;
+        }
+
+        auto [nextCode, hBlankSize] = findTimingCode(bytebuf + activeSize + 4,
+                                                     TOTAL_BUFFER_SIZE * 4 - activeSize - 4);
+        if (nextCode < 0)
+        {
+            return false;
+        }
+
+        // VSync
+        startVideoCapture(buffer_, SAV_VSYNC_F0, 1);
+        waitVideoCapture();
+
+        // Active 期間のライン数を数える
+        startVideoCapture(buffer_, SAV_ACTIVE_F0, 1);
+        waitVideoCapture();
+
+        constexpr int marginSizeInWord = 64;
+        const int readSizeInWord = ((activeSize + 3) >> 2) + marginSizeInWord;
+        const int searchOfs = hBlankSize * 7 >> 3;
+
+        int activeLinesF0 = 1;
+
+        auto checkCode = [](int v, uint32_t codeWord)
+        {
+            return v == (codeWord & 255);
+        };
+
+        const auto eavActiveF0 = eavActive == 0 ? 0xff000000 : EAV_ACTIVE_F0;
+        const auto eavActiveF1 = eavActive == 0 ? 0xff000000 : EAV_ACTIVE_F1;
+
+        while (1)
+        {
+            startVideoCapture(buffer_, eavActiveF0, readSizeInWord);
+            waitVideoCapture();
+
+            nextCode = findTimingCode(bytebuf + searchOfs, readSizeInWord * 4).first;
+            if (nextCode < 0)
+            {
+                return false;
+            }
+            if (!checkCode(nextCode, SAV_ACTIVE_F0))
+            {
+                break;
+            }
+
+            ++activeLinesF0;
+        }
+
+        // VBlank のラインを数える
+        int vblankLines = 0;
+
+        while (1)
+        {
+            auto getNextEAV = [&]
+            {
+                if (eavActive == 0)
+                {
+                    return 0xff000000u; // 要検証
+                }
+
+                switch (nextCode)
+                {
+                case SAV_VSYNC_F0 & 0xff:
+                    return EAV_VSYNC_F0;
+
+                case SAV_VSYNC_F1 & 0xff:
+                    return EAV_VSYNC_F1;
+                };
+                return 0;
+            };
+
+            auto eav = getNextEAV();
+            if (!eav)
+            {
+                break;
+            }
+
+            ++vblankLines;
+
+            startVideoCapture(buffer_, eavActiveF0, readSizeInWord);
+            waitVideoCapture();
+
+            nextCode = findTimingCode(bytebuf + searchOfs, readSizeInWord * 4).first;
+            if (nextCode < 0)
+            {
+                return false;
+            }
+        }
+
+        // 次のactive区間
+
+        if (checkCode(nextCode, SAV_ACTIVE_F1))
+        {
+            // interlaced
+            while (1)
+            {
+            }
+        }
+        else if (checkCode(nextCode, SAV_ACTIVE_F0)
+        {
+            // non interlace
+        }
+        else
+        {
+            return false;
+        }
+    }
+};
+
+VideoCapture capture_;
+
+void __not_in_flash_func(videoInTest)()
+{
+    uint32_t buffer[1024];
+
+    startVideoCapture(buffer, SAV_ACTIVE_LINE, 1024);
+    waitVideoCapture();
+
+    util::dump(buffer, buffer + 1024);
+
+    while (1)
+        ;
+}
+#endif
+
 int main()
 {
     vreg_set_voltage(VREG_VOLTAGE_1_20);
@@ -717,6 +956,8 @@ int main()
     initDMA();
 
     gpio_put(LED_PIN, 1);
+
+    // videoInTest();
 
     driver_.init();
 

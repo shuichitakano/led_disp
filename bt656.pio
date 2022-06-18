@@ -1,6 +1,11 @@
+; ---------------------------------
+; BT656 ストリームを入力
+; in:
+;  - bit 0-7: data
+;  - bit 8  : clock
 ;
 .program capture_bt656
-.define PIN_CLOCK 9
+.define PIN_CLOCK 8
 
     ; 28.67MHzは34.88ns間隔
     ; duty 50:50 として 17.44ns 幅
@@ -20,7 +25,7 @@ loop0:
 
     wait 1 pin PIN_CLOCK
     in pins, 8
-    mov x, osr                  ; transfer size - 1
+    out x, 32                   ; transfer bytes - 1
 
 loop1:
     wait 0 pin PIN_CLOCK
@@ -28,12 +33,23 @@ loop1:
     in pins, 8
     jmp x--, loop1
 
-    out null, 32
+% c-sdk {
+static inline void
+initProgramCaptureBT656(PIO pio, uint sm, uint offset, uint pinIN)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinIN, 9, false);
 
-; 16 inst
+    pio_gpio_init(pio, pinIN + 0);
+    pio_gpio_init(pio, pinIN + 1);
 
-
-
+    pio_sm_config c = led_pwm_program_get_default_config(offset);
+    sm_config_set_in_pins(&c, pinIN);
+    sm_config_set_in_shift(&c, false /* right */, true /* auto */, 32);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
 
 
 

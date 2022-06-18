@@ -13,9 +13,12 @@ namespace util
     template <class T>
     void dump(T p, T end, const char *fmt = "%08x ")
     {
+        int ct = 0;
         for (; p != end; ++p)
         {
             printf(fmt, *p);
+            if ((ct++ & 7) == 7)
+                printf("\n");
         }
         printf("\n");
     }
