@@ -27,4 +27,9 @@ namespace graphics
     void convertBGRB888toBGR565(uint16_t *dst, const uint8_t *src, size_t n);
 
     void compositeFont(uint16_t *line, int x, int w, int yofs, const char *str);
+
+    //
+
+    void resizeYCrCb420(uint32_t *dst, size_t nDstPixels,
+                        const uint32_t *src, size_t nSrcPixels, size_t srcOfs = 0);
 }

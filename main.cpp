@@ -958,12 +958,28 @@ struct VideoCapture
         waitVideoCapture();
         util::dump(std::begin(buffer_), std::end(buffer_));
     }
+
+    void imageConvertTest()
+    {
+        for (int i = 0; i < 720 / 2; ++i)
+            //            buffer_[i] = 0x01900080 + (0x02020202 * i);
+            buffer_[i] = 0x01000000 + (0x02000200 * i);
+
+        uint32_t tmp[320];
+        graphics::resizeYCrCb420(tmp, 320, buffer_, 720);
+
+        printf("src:\n");
+        util::dump((uint16_t *)buffer_, (uint16_t *)buffer_ + 720, "%04x ");
+        printf("scaled:\n");
+        util::dump(tmp, tmp + 320);
+    }
 };
 
 VideoCapture capture_;
 
 void __not_in_flash_func(videoInTest)()
 {
+    capture_.imageConvertTest();
     capture_.simpleCaptureTest();
     while (1)
     {
