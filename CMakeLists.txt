@@ -24,7 +24,7 @@ add_executable(led_disp
     image_proc.cpp
     framebuffer.cpp
     rgb2serial.S
-    ycrcb2rgb.S
+    ycbcr2rgb.S
 )
 
 pico_generate_pio_header(led_disp ${CMAKE_CURRENT_LIST_DIR}/led.pio)

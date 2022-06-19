@@ -963,15 +963,22 @@ struct VideoCapture
     {
         for (int i = 0; i < 720 / 2; ++i)
             //            buffer_[i] = 0x01900080 + (0x02020202 * i);
-            buffer_[i] = 0x01000000 + (0x02000200 * i);
+            buffer_[i] = 0x01800080 + (0x02000200 * i);
 
         uint32_t tmp[320];
-        graphics::resizeYCrCb420(tmp, 320, buffer_, 720);
+        graphics::resizeYCbCr420(tmp, 320, buffer_, 720);
 
         printf("src:\n");
         util::dump((uint16_t *)buffer_, (uint16_t *)buffer_ + 720, "%04x ");
         printf("scaled:\n");
         util::dump(tmp, tmp + 320);
+
+        uint16_t tmp2[320];
+        graphics::convertYCbCr2RGB565(tmp2, tmp, 320);
+
+        printf("rgb:\n");
+        util::dumpF(tmp2, tmp2 + 320, [](int v)
+                    { printf("(%2d, %2d, %2d) ", (v >> 11) & 31, (v >> 5) & 63, v & 31); });
     }
 };
 
