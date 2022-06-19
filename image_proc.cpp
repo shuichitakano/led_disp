@@ -20,8 +20,10 @@ extern "C"
         const uint16_t *p3,
         uint32_t *dst, uint32_t *dstTail);
 
-    void resizeYCrCb420(uint32_t *dst,
+    void resizeYCbCr420(uint32_t *dst,
                         uint32_t *dstTail);
+
+    void convertYCbCr2RGB565(uint16_t *dst, const uint32_t *src, size_t nPixels);
 }
 
 namespace graphics
@@ -365,7 +367,7 @@ namespace graphics
     }
 
     //
-    void __not_in_flash_func(resizeYCrCb420)(uint32_t *dst, size_t nDstPixels,
+    void __not_in_flash_func(resizeYCbCr420)(uint32_t *dst, size_t nDstPixels,
                                              const uint32_t *src, size_t nSrcPixels,
                                              size_t srcOfs)
     {
@@ -389,6 +391,43 @@ namespace graphics
             interp0_hw->base[1] = 0;
             interp0_hw->base[2] = reinterpret_cast<uintptr_t>(src) + 1 /* y ofs */;
         }
-        ::resizeYCrCb420(dst, dst + nDstPixels);
+        ::resizeYCbCr420(dst, dst + nDstPixels);
+    }
+
+    void __not_in_flash_func(convertYCbCr2RGB565)(uint16_t *dst,
+                                                  const uint32_t *src, size_t nPixels)
+    {
+        {
+            auto c0 = interp_default_config();
+            interp_config_set_shift(&c0, 14);
+            interp_config_set_mask(&c0, 11, 15);
+
+            auto c1 = interp_default_config();
+            interp_config_set_shift(&c1, 3);
+            interp_config_set_mask(&c1, 5, 10);
+
+            interp_set_config(interp0_hw, 0, &c0);
+            interp_set_config(interp0_hw, 1, &c1);
+        }
+        {
+            auto c0 = interp_default_config();
+            interp_config_set_clamp(&c0, true);
+            interp_config_set_signed(&c0, true);
+
+            // auto c1 = interp_default_config();
+            //  interp_config_set_cross_input(&c1, true);
+            //  interp_config_set_shift(&c1, 6);
+            //  interp_config_set_mask(&c1, 0, 4);
+
+            interp_set_config(interp1_hw, 0, &c0);
+            // interp_set_config(interp1_hw, 1, &c1);
+
+            interp1_hw->base[0] = 0;
+            interp1_hw->base[1] = 255 << 6;
+
+            // c1側は使えないようだ
+        }
+
+        ::convertYCbCr2RGB565(dst, src, nPixels);
     }
 }

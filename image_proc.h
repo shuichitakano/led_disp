@@ -30,6 +30,8 @@ namespace graphics
 
     //
 
-    void resizeYCrCb420(uint32_t *dst, size_t nDstPixels,
+    void resizeYCbCr420(uint32_t *dst, size_t nDstPixels,
                         const uint32_t *src, size_t nSrcPixels, size_t srcOfs = 0);
+
+    void convertYCbCr2RGB565(uint16_t *dst, const uint32_t *src, size_t nPixels);
 }

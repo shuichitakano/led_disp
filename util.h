@@ -23,6 +23,19 @@ namespace util
         printf("\n");
     }
 
+    template <class T, class F>
+    void dumpF(T p, T end, const F &func)
+    {
+        int ct = 0;
+        for (; p != end; ++p)
+        {
+            func(*p);
+            if ((ct++ & 7) == 7)
+                printf("\n");
+        }
+        printf("\n");
+    }
+
     inline void initSysTick()
     {
         systick_hw->csr = 0x5;
