@@ -19,6 +19,9 @@ extern "C"
         const uint16_t *p2,
         const uint16_t *p3,
         uint32_t *dst, uint32_t *dstTail);
+
+    void resizeYCrCb420(uint32_t *dst,
+                        uint32_t *dstTail);
 }
 
 namespace graphics
@@ -359,5 +362,33 @@ namespace graphics
                 }
             }
         }
+    }
+
+    //
+    void __not_in_flash_func(resizeYCrCb420)(uint32_t *dst, size_t nDstPixels,
+                                             const uint32_t *src, size_t nSrcPixels,
+                                             size_t srcOfs)
+    {
+        {
+            auto c0 = interp_default_config();
+            interp_config_set_add_raw(&c0, true);
+            interp_config_set_shift(&c0, 16);
+            interp_config_set_mask(&c0, 1, 31);
+
+            auto c1 = interp_default_config();
+
+            interp_set_config(interp0_hw, 0, &c0);
+            interp_set_config(interp0_hw, 1, &c1);
+
+            // y の立場では 2 byte/pix で 16bit 固定少数
+            int step = (nSrcPixels << 17) / nDstPixels;
+
+            interp0_hw->accum[0] = (srcOfs << 17) + (step >> 1);
+            interp0_hw->accum[1] = 0;
+            interp0_hw->base[0] = step;
+            interp0_hw->base[1] = 0;
+            interp0_hw->base[2] = reinterpret_cast<uintptr_t>(src) + 1 /* y ofs */;
+        }
+        ::resizeYCrCb420(dst, dst + nDstPixels);
     }
 }
