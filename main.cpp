@@ -10,6 +10,7 @@
 #include <hardware/vreg.h>
 #include <hardware/divider.h>
 #include <vector>
+#include <tuple>
 #include <array>
 #include <cassert>
 #include <cstdio>
@@ -741,7 +742,7 @@ void __not_in_flash_func(core1_main)()
     driver_.loop();
 }
 
-#if 0
+#if 1
 struct VideoCapture
 {
     static constexpr uint32_t UNIT_BUFFER_SIZE = 512;
@@ -750,19 +751,24 @@ struct VideoCapture
     uint32_t buffer_[TOTAL_BUFFER_SIZE];
 
     int dataWidthInWords_ = 0;
+    int hBlankSizeInBytes_ = 0;
     int activeLines_ = 0;
+    int vBlankLines_ = 0;
     bool interlace_ = false;
-    uint32_t vsyncInterval256_ = 0;
+    uint32_t vSyncIntervalCycles_ = 0;
 
-    static constexpr uint32_t SAV_ACTIVE_F0 = 0xff000080;
-    static constexpr uint32_t SAV_ACTIVE_F1 = 0xff0000c7;
-    static constexpr uint32_t SAV_VSYNC_F0 = 0xff0000ab;
-    static constexpr uint32_t SAV_VSYNC_F1 = 0xff0000ec;
+    static constexpr uint32_t SAV_ACTIVE_F0 = 0x800000ff;
+    static constexpr uint32_t SAV_ACTIVE_F1 = 0xc70000ff;
+    static constexpr uint32_t SAV_VSYNC_F0 = 0xab0000ff;
+    static constexpr uint32_t SAV_VSYNC_F1 = 0xec0000ff;
 
-    static constexpr uint32_t EAV_ACTIVE_F0 = 0xff00009d;
-    static constexpr uint32_t EAV_ACTIVE_F1 = 0xff0000da;
-    static constexpr uint32_t EAV_VSYNC_F0 = 0xff0000b6;
-    static constexpr uint32_t EAV_VSYNC_F1 = 0xff0000f1;
+    static constexpr uint32_t EAV_ACTIVE_F0 = 0x9d0000ff;
+    static constexpr uint32_t EAV_ACTIVE_F1 = 0xda0000ff;
+    static constexpr uint32_t EAV_VSYNC_F0 = 0xb60000ff;
+    static constexpr uint32_t EAV_VSYNC_F1 = 0xf10000ff;
+
+    static constexpr uint32_t maxActiveLines = 1200;
+    static constexpr uint32_t maxVBlankLines = 600;
 
     uint32_t *__not_in_flash_func(getBuffer)(int dbid)
     {
@@ -771,18 +777,6 @@ struct VideoCapture
 
     bool __not_in_flash_func(analyzeSignal)()
     {
-        auto findEAV = [&]
-        {
-            for (int i = 0; i < TOTAL_BUFFER_SIZE; ++i)
-            {
-                if ((buffer_[i] & 0xffffff00) == 0xff000000)
-                {
-                    return i;
-                }
-                return -1;
-            }
-        };
-
         auto findTimingCode = [&](const uint8_t *p, size_t size) -> std::pair<int, int>
         {
             for (auto i = 0u; i < size - 3; ++i)
@@ -802,11 +796,13 @@ struct VideoCapture
         startVideoCapture(buffer_, SAV_ACTIVE_F0, TOTAL_BUFFER_SIZE);
         waitVideoCapture();
 
-        auto bytebuf = static_cast<uint8_t *>(buffer_);
+        auto bytebuf = reinterpret_cast<uint8_t *>(buffer_);
 
         auto [eavActive, activeSize] = findTimingCode(bytebuf, TOTAL_BUFFER_SIZE * 4 - 4);
         if (eavActive < 0)
         {
+            printf("no timing code : random line\n");
+            util::dump(std::begin(buffer_), std::end(buffer_));
             return false;
         }
 
@@ -814,107 +810,153 @@ struct VideoCapture
                                                      TOTAL_BUFFER_SIZE * 4 - activeSize - 4);
         if (nextCode < 0)
         {
+            printf("no next SAV\n");
             return false;
         }
 
+        // EAV_hoge, hblank, SAV_hoge, data ... みたいな順番
+
         // VSync
-        startVideoCapture(buffer_, SAV_VSYNC_F0, 1);
+        startVideoCapture(buffer_, EAV_VSYNC_F0, 1);
         waitVideoCapture();
 
         // Active 期間のライン数を数える
-        startVideoCapture(buffer_, SAV_ACTIVE_F0, 1);
+        startVideoCapture(buffer_, EAV_ACTIVE_F0, 1);
         waitVideoCapture();
 
-        constexpr int marginSizeInWord = 64;
-        const int readSizeInWord = ((activeSize + 3) >> 2) + marginSizeInWord;
-        const int searchOfs = hBlankSize * 7 >> 3;
+        auto t0 = util::getSysTickCounter24();
 
-        int activeLinesF0 = 1;
+        const int readSizeInWord = ((activeSize + 3) >> 2) + 1 /* eav */;
 
-        auto checkCode = [](int v, uint32_t codeWord)
+        constexpr auto getCodeByte = [](uint32_t codeWord)
         {
-            return v == (codeWord & 255);
+            return codeWord >> 24;
         };
 
-        const auto eavActiveF0 = eavActive == 0 ? 0xff000000 : EAV_ACTIVE_F0;
-        const auto eavActiveF1 = eavActive == 0 ? 0xff000000 : EAV_ACTIVE_F1;
+        auto getEAVCode = [&]() -> int
+        {
+            auto v = buffer_[activeSize >> 2];
+            if ((v & 0xff) != 0xff)
+            {
+                return -1;
+            }
+            return v >> 24;
+        };
 
+        int activeLinesF0 = 1;
         while (1)
         {
-            startVideoCapture(buffer_, eavActiveF0, readSizeInWord);
+            startVideoCapture(buffer_, SAV_ACTIVE_F0, readSizeInWord);
             waitVideoCapture();
 
-            nextCode = findTimingCode(bytebuf + searchOfs, readSizeInWord * 4).first;
+            nextCode = getEAVCode();
             if (nextCode < 0)
             {
+                printf("error: no timing code (active F0).\n");
                 return false;
             }
-            if (!checkCode(nextCode, SAV_ACTIVE_F0))
+            if (nextCode != getCodeByte(EAV_ACTIVE_F0))
             {
                 break;
             }
 
             ++activeLinesF0;
-        }
 
-        // VBlank のラインを数える
-        int vblankLines = 0;
-
-        while (1)
-        {
-            auto getNextEAV = [&]
+            if (activeLinesF0 > maxActiveLines)
             {
-                if (eavActive == 0)
-                {
-                    return 0xff000000u; // 要検証
-                }
-
-                switch (nextCode)
-                {
-                case SAV_VSYNC_F0 & 0xff:
-                    return EAV_VSYNC_F0;
-
-                case SAV_VSYNC_F1 & 0xff:
-                    return EAV_VSYNC_F1;
-                };
-                return 0;
-            };
-
-            auto eav = getNextEAV();
-            if (!eav)
-            {
-                break;
-            }
-
-            ++vblankLines;
-
-            startVideoCapture(buffer_, eavActiveF0, readSizeInWord);
-            waitVideoCapture();
-
-            nextCode = findTimingCode(bytebuf + searchOfs, readSizeInWord * 4).first;
-            if (nextCode < 0)
-            {
+                printf("error: active line over.\n");
+                util::dump(buffer_, buffer_ + readSizeInWord);
                 return false;
             }
         }
 
-        // 次のactive区間
-
-        if (checkCode(nextCode, SAV_ACTIVE_F1))
+        // VBlank のラインを数える
+        int vblankLines = 0;
+        while (1)
         {
-            // interlaced
-            while (1)
+            auto getNextSAV = [&]() -> int
             {
+                switch (nextCode)
+                {
+                case getCodeByte(EAV_VSYNC_F0):
+                    return SAV_VSYNC_F0;
+
+                case getCodeByte(EAV_VSYNC_F1):
+                    return SAV_VSYNC_F1;
+                };
+                return 0;
+            };
+
+            auto sav = getNextSAV();
+            if (!sav)
+            {
+                break;
+            }
+
+            startVideoCapture(buffer_, sav, readSizeInWord);
+            waitVideoCapture();
+
+            nextCode = getEAVCode();
+            if (nextCode < 0)
+            {
+                printf("error: no timing code (vsync).\n");
+                return false;
+            }
+
+            ++vblankLines;
+
+            if (vblankLines > maxVBlankLines)
+            {
+                printf("error: vblank line over.\n");
+                return false;
             }
         }
-        else if (checkCode(nextCode, SAV_ACTIVE_F0)
+        auto t1 = util::getSysTickCounter24();
+
+        // 次のactive区間
+        bool interlaced = false;
+        if (nextCode == getCodeByte(EAV_ACTIVE_F1))
         {
-            // non interlace
+            interlaced = true;
+        }
+        else if (nextCode == getCodeByte(EAV_ACTIVE_F0))
+        {
+            interlaced = false;
         }
         else
         {
+            printf("error: unkown frame format: EAV %02x, %d, %d.\n", nextCode, activeLinesF0, vblankLines);
             return false;
         }
+
+        dataWidthInWords_ = activeSize >> 2;
+        hBlankSizeInBytes_ = hBlankSize;
+        activeLines_ = activeLinesF0;
+        vBlankLines_ = vblankLines;
+        interlace_ = interlaced;
+        vSyncIntervalCycles_ = (t0 - t1) & 0xffffff;
+
+        printf("Data width  : %d.\n", activeSize >> 1);
+        printf("H blank     : %d.%d.\n", hBlankSize >> 1, hBlankSize & 1 ? 5 : 0);
+        printf("Active line : %d\n", activeLinesF0);
+        printf("V blank line: %d\n", vblankLines);
+        printf("Interlace   : %s\n", interlaced ? "true" : "false");
+        printf("V sync cycle: %d\n", vSyncIntervalCycles_);
+        printf("FPS         : %f\n", (float)CPU_CLOCK_KHZ * 1000 / vSyncIntervalCycles_);
+        return true;
+    }
+
+    void simpleCaptureTest()
+    {
+        printf("Active line:\n");
+        startVideoCapture(buffer_, SAV_ACTIVE_F0, TOTAL_BUFFER_SIZE);
+        waitVideoCapture();
+        util::dump(std::begin(buffer_), std::end(buffer_));
+
+        printf("VSync line:\n");
+        startVideoCapture(buffer_, SAV_VSYNC_F0, TOTAL_BUFFER_SIZE);
+        waitVideoCapture();
+        util::dump(std::begin(buffer_), std::end(buffer_));
     }
 };
 
@@ -922,12 +964,14 @@ VideoCapture capture_;
 
 void __not_in_flash_func(videoInTest)()
 {
-    uint32_t buffer[1024];
-
-    startVideoCapture(buffer, SAV_ACTIVE_LINE, 1024);
-    waitVideoCapture();
-
-    util::dump(buffer, buffer + 1024);
+    capture_.simpleCaptureTest();
+    while (1)
+    {
+        if (capture_.analyzeSignal())
+        {
+            break;
+        }
+    }
 
     while (1)
         ;
@@ -957,7 +1001,7 @@ int main()
 
     gpio_put(LED_PIN, 1);
 
-    // videoInTest();
+    videoInTest();
 
     driver_.init();
 

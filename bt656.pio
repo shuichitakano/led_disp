@@ -44,7 +44,7 @@ initProgramCaptureBT656(PIO pio, uint sm, uint offset, uint pinIN)
 
     pio_sm_config c = led_pwm_program_get_default_config(offset);
     sm_config_set_in_pins(&c, pinIN);
-    sm_config_set_in_shift(&c, false /* right */, true /* auto */, 32);
+    sm_config_set_in_shift(&c, true /* right */, true /* auto */, 32);
     sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);
