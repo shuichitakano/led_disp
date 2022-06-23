@@ -18,14 +18,14 @@ namespace graphics
     public:
         void initialize(int w, int h, int margin);
 
-        uint16_t *getLineBuffer(int lineID);
+        uint16_t *__not_in_flash_func(getLineBuffer)(int lineID);
 
-        int allocateLine();
-        void commitNextLine(int lineID);
+        int __not_in_flash_func(allocateLine)();
+        void __not_in_flash_func(commitNextLine)(int lineID);
         void finishPlane();
 
-        int moveCurrentPlaneLine(int y);
-        void freeLine(const std::initializer_list<int> &indices);
+        int __not_in_flash_func(moveCurrentPlaneLine)(int y);
+        void __not_in_flash_func(freeLine)(const std::initializer_list<int> &indices);
 
         void flipReadPlane();
 

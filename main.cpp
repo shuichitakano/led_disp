@@ -23,14 +23,14 @@
 #include "bmp.h"
 #include "framebuffer.h"
 #include "util.h"
+#include "video_capture.h"
+#include "app.h"
 
 namespace
 {
     //#include "test.h"
 #include "test_320x240.h"
 }
-
-static constexpr uint32_t CPU_CLOCK_KHZ = 250000;
 
 // LED data
 static constexpr uint32_t PIN_R1 = 8;
@@ -66,13 +66,6 @@ static constexpr uint32_t PIN_VCLK = 22;
 // I2C
 static constexpr uint32_t PIN_SDA = 26;
 static constexpr uint32_t PIN_SCL = 27;
-
-//
-static constexpr int UNIT_WIDTH = 16;
-static constexpr int N_CASCADE = 10; // 16 * 10
-static constexpr int N_SCAN_LINES = 60;
-static constexpr int BPP = 16;
-static constexpr int PWM_PULSE_PER_LINE = 74;
 
 #if 0
 #define SLEEP sleep_us(0)
@@ -433,7 +426,7 @@ void __not_in_flash_func(finishDataTransfer)()
     hw_clear_bits(&pioDataCmd_->ctrl, 7u << PIO_CTRL_SM_ENABLE_LSB);
 }
 
-void waitVideoCapture()
+void __not_in_flash_func(waitVideoCapture)()
 {
     resetPIOTxStalled(pioPWM_, SM_VIDEO_IN);
     while (!isPIOTxStalled(pioPWM_, SM_VIDEO_IN))
@@ -442,8 +435,10 @@ void waitVideoCapture()
     }
 }
 
-void startVideoCapture(uint32_t *dst, uint32_t startCode, uint32_t transferWords)
+void __not_in_flash_func(startVideoCapture)(uint32_t *dst,
+                                            uint32_t startCode, uint32_t transferWords)
 {
+    assert(transferWords > 0);
     waitVideoCapture();
 
     dma_channel_set_trans_count(dmaChVideoIn, transferWords, false);
@@ -483,6 +478,7 @@ struct LEDDriver
     uint32_t dataBuffer_[N_DATA_BUFFERS][N_RGB_CH][UNIT_DATA_BUFFER_SIZE + 2]; // 22.5KB
 
     graphics::FrameBuffer frameBuffer_;
+    VideoCapture capture_;
 
     void init()
     {
@@ -659,72 +655,81 @@ struct LEDDriver
         }
     }
 
+    void __not_in_flash_func(drawStatusLine)(int fps16, int ct)
+    {
+        char str[41];
+        int nch = snprintf(str, sizeof(str),
+                           "%d %d.%dFPS",
+                           ct,
+                           fps16 >> 4, ((fps16 & 15) * 10) >> 4);
+        int xofs = 320 - 2 - nch * 8;
+        for (int i = 0; i < 8; ++i)
+        {
+            if (auto *p = frameBuffer_.getWritePlaneLineUnsafe(240 - 2 - 8 + i))
+            {
+                graphics::compositeFont(p, xofs, 320, i, str);
+            }
+        }
+    }
+
     void __not_in_flash_func(mainProc)()
     {
         int yofs = 0;
-
         auto prevTick = util::getSysTickCounter24();
 
-        while (1)
+        while (true)
         {
-            auto w = bmp_->getWidth();
-            auto h = bmp_->getHeight();
-            auto *img = (uint8_t *)bmp_->getBits() + 3 * w * (h - 1);
-            int stride = -w * 3;
-
-            auto writeStatusLine = [&]
+            //            printf("%d\n", yofs);
+            if (1)
             {
-                auto curTick = util::getSysTickCounter24();
-                auto frameTick = (prevTick - curTick) & 0xffffff;
-                auto fps16 = hw_divider_u32_quotient_inlined(CPU_CLOCK_KHZ * 1000 * 16, frameTick);
-                prevTick = curTick;
-
-                char str[41];
-                int nch = snprintf(str, sizeof(str),
-                                   "%d %d.%dFPS",
-                                   yofs,
-                                   fps16 >> 4, ((fps16 & 15) * 10) >> 4);
-                int xofs = 320 - 2 - nch * 8;
-                for (int i = 0; i < 8; ++i)
+                if (!capture_.tick(frameBuffer_))
                 {
-                    if (auto *p = frameBuffer_.getWritePlaneLineUnsafe(240 - 2 - 8 + i))
-                    {
-                        graphics::compositeFont(p, xofs, 320, i, str);
-                    }
+                    continue;
                 }
-            };
-
-            for (int y = 0; y < 240; ++y)
-            {
-                int lineID = frameBuffer_.allocateLine();
-                auto p = frameBuffer_.getLineBuffer(lineID);
-#if 1
-#if 1
-                graphics::convertBGRB888toBGR565(p, img + stride * ((y + yofs) % h), w);
-#elif 1
-                int y2 = (y + yofs) % 240;
-                if (y2 < h)
-                {
-                    memset(p, 0, 160 * 2);
-                    graphics::convertBGRB888toBGR565(p + 160, img + stride * y2, w);
-                }
-                else
-                {
-                    memset(p, 0, 320 * 2);
-                }
-#else
-                graphics::convertBGRB888toBGR565(p, img + stride * ((y + yofs) % h), w);
-                graphics::convertBGRB888toBGR565(p + 160, img + stride * ((y + yofs) % h), w);
-#endif
-#endif
-                if (y == 239)
-                {
-                    // commit前にやらないといけない
-                    writeStatusLine();
-                }
-
-                frameBuffer_.commitNextLine(lineID);
             }
+            else
+            {
+                auto w = bmp_->getWidth();
+                auto h = bmp_->getHeight();
+                auto *img = (uint8_t *)bmp_->getBits() + 3 * w * (h - 1);
+                int stride = -w * 3;
+
+                for (int y = 0; y < 240; ++y)
+                {
+                    int lineID = frameBuffer_.allocateLine();
+                    auto p = frameBuffer_.getLineBuffer(lineID);
+#if 1
+#if 1
+                    graphics::convertBGRB888toBGR565(p, img + stride * ((y + yofs) % h), w);
+#elif 1
+                    int y2 = (y + yofs) % 240;
+                    if (y2 < h)
+                    {
+                        memset(p, 0, 160 * 2);
+                        graphics::convertBGRB888toBGR565(p + 160, img + stride * y2, w);
+                    }
+                    else
+                    {
+                        memset(p, 0, 320 * 2);
+                    }
+#else
+                    graphics::convertBGRB888toBGR565(p, img + stride * ((y + yofs) % h), w);
+                    graphics::convertBGRB888toBGR565(p + 160, img + stride * ((y + yofs) % h), w);
+#endif
+#endif
+
+                    frameBuffer_.commitNextLine(lineID);
+                }
+            }
+
+            auto curTick = util::getSysTickCounter24();
+            auto frameTick = (prevTick - curTick) & 0xffffff;
+            auto fps16 = hw_divider_u32_quotient_inlined(CPU_CLOCK_KHZ * 1000 * 16, frameTick);
+            prevTick = curTick;
+
+            //            printf("%d %d\n", fps16 >> 4, yofs);
+
+            drawStatusLine(fps16, yofs);
 
             frameBuffer_.finishPlane();
 
@@ -741,265 +746,6 @@ void __not_in_flash_func(core1_main)()
 {
     driver_.loop();
 }
-
-#if 1
-struct VideoCapture
-{
-    static constexpr uint32_t UNIT_BUFFER_SIZE = 512;
-    static constexpr uint32_t TOTAL_BUFFER_SIZE = UNIT_BUFFER_SIZE * 2;
-
-    uint32_t buffer_[TOTAL_BUFFER_SIZE];
-
-    int dataWidthInWords_ = 0;
-    int hBlankSizeInBytes_ = 0;
-    int activeLines_ = 0;
-    int vBlankLines_ = 0;
-    bool interlace_ = false;
-    uint32_t vSyncIntervalCycles_ = 0;
-
-    static constexpr uint32_t SAV_ACTIVE_F0 = 0x800000ff;
-    static constexpr uint32_t SAV_ACTIVE_F1 = 0xc70000ff;
-    static constexpr uint32_t SAV_VSYNC_F0 = 0xab0000ff;
-    static constexpr uint32_t SAV_VSYNC_F1 = 0xec0000ff;
-
-    static constexpr uint32_t EAV_ACTIVE_F0 = 0x9d0000ff;
-    static constexpr uint32_t EAV_ACTIVE_F1 = 0xda0000ff;
-    static constexpr uint32_t EAV_VSYNC_F0 = 0xb60000ff;
-    static constexpr uint32_t EAV_VSYNC_F1 = 0xf10000ff;
-
-    static constexpr uint32_t maxActiveLines = 1200;
-    static constexpr uint32_t maxVBlankLines = 600;
-
-    uint32_t *__not_in_flash_func(getBuffer)(int dbid)
-    {
-        return &buffer_[dbid * UNIT_BUFFER_SIZE];
-    }
-
-    bool __not_in_flash_func(analyzeSignal)()
-    {
-        auto findTimingCode = [&](const uint8_t *p, size_t size) -> std::pair<int, int>
-        {
-            for (auto i = 0u; i < size - 3; ++i)
-            {
-                if (p[i] == 0xff)
-                {
-                    if (p[i + 1] == 0 && p[i + 2] == 0)
-                    {
-                        return {p[i + 3], i};
-                    }
-                }
-            }
-            return {-1, -1};
-        };
-
-        // とりあえず映像探す
-        startVideoCapture(buffer_, SAV_ACTIVE_F0, TOTAL_BUFFER_SIZE);
-        waitVideoCapture();
-
-        auto bytebuf = reinterpret_cast<uint8_t *>(buffer_);
-
-        auto [eavActive, activeSize] = findTimingCode(bytebuf, TOTAL_BUFFER_SIZE * 4 - 4);
-        if (eavActive < 0)
-        {
-            printf("no timing code : random line\n");
-            util::dump(std::begin(buffer_), std::end(buffer_));
-            return false;
-        }
-
-        auto [nextCode, hBlankSize] = findTimingCode(bytebuf + activeSize + 4,
-                                                     TOTAL_BUFFER_SIZE * 4 - activeSize - 4);
-        if (nextCode < 0)
-        {
-            printf("no next SAV\n");
-            return false;
-        }
-
-        // EAV_hoge, hblank, SAV_hoge, data ... みたいな順番
-
-        // VSync
-        startVideoCapture(buffer_, EAV_VSYNC_F0, 1);
-        waitVideoCapture();
-
-        // Active 期間のライン数を数える
-        startVideoCapture(buffer_, EAV_ACTIVE_F0, 1);
-        waitVideoCapture();
-
-        auto t0 = util::getSysTickCounter24();
-
-        const int readSizeInWord = ((activeSize + 3) >> 2) + 1 /* eav */;
-
-        constexpr auto getCodeByte = [](uint32_t codeWord)
-        {
-            return codeWord >> 24;
-        };
-
-        auto getEAVCode = [&]() -> int
-        {
-            auto v = buffer_[activeSize >> 2];
-            if ((v & 0xff) != 0xff)
-            {
-                return -1;
-            }
-            return v >> 24;
-        };
-
-        int activeLinesF0 = 1;
-        while (1)
-        {
-            startVideoCapture(buffer_, SAV_ACTIVE_F0, readSizeInWord);
-            waitVideoCapture();
-
-            nextCode = getEAVCode();
-            if (nextCode < 0)
-            {
-                printf("error: no timing code (active F0).\n");
-                return false;
-            }
-            if (nextCode != getCodeByte(EAV_ACTIVE_F0))
-            {
-                break;
-            }
-
-            ++activeLinesF0;
-
-            if (activeLinesF0 > maxActiveLines)
-            {
-                printf("error: active line over.\n");
-                util::dump(buffer_, buffer_ + readSizeInWord);
-                return false;
-            }
-        }
-
-        // VBlank のラインを数える
-        int vblankLines = 0;
-        while (1)
-        {
-            auto getNextSAV = [&]() -> int
-            {
-                switch (nextCode)
-                {
-                case getCodeByte(EAV_VSYNC_F0):
-                    return SAV_VSYNC_F0;
-
-                case getCodeByte(EAV_VSYNC_F1):
-                    return SAV_VSYNC_F1;
-                };
-                return 0;
-            };
-
-            auto sav = getNextSAV();
-            if (!sav)
-            {
-                break;
-            }
-
-            startVideoCapture(buffer_, sav, readSizeInWord);
-            waitVideoCapture();
-
-            nextCode = getEAVCode();
-            if (nextCode < 0)
-            {
-                printf("error: no timing code (vsync).\n");
-                return false;
-            }
-
-            ++vblankLines;
-
-            if (vblankLines > maxVBlankLines)
-            {
-                printf("error: vblank line over.\n");
-                return false;
-            }
-        }
-        auto t1 = util::getSysTickCounter24();
-
-        // 次のactive区間
-        bool interlaced = false;
-        if (nextCode == getCodeByte(EAV_ACTIVE_F1))
-        {
-            interlaced = true;
-        }
-        else if (nextCode == getCodeByte(EAV_ACTIVE_F0))
-        {
-            interlaced = false;
-        }
-        else
-        {
-            printf("error: unkown frame format: EAV %02x, %d, %d.\n", nextCode, activeLinesF0, vblankLines);
-            return false;
-        }
-
-        dataWidthInWords_ = activeSize >> 2;
-        hBlankSizeInBytes_ = hBlankSize;
-        activeLines_ = activeLinesF0;
-        vBlankLines_ = vblankLines;
-        interlace_ = interlaced;
-        vSyncIntervalCycles_ = (t0 - t1) & 0xffffff;
-
-        printf("Data width  : %d.\n", activeSize >> 1);
-        printf("H blank     : %d.%d.\n", hBlankSize >> 1, hBlankSize & 1 ? 5 : 0);
-        printf("Active line : %d\n", activeLinesF0);
-        printf("V blank line: %d\n", vblankLines);
-        printf("Interlace   : %s\n", interlaced ? "true" : "false");
-        printf("V sync cycle: %d\n", vSyncIntervalCycles_);
-        printf("FPS         : %f\n", (float)CPU_CLOCK_KHZ * 1000 / vSyncIntervalCycles_);
-        return true;
-    }
-
-    void simpleCaptureTest()
-    {
-        printf("Active line:\n");
-        startVideoCapture(buffer_, SAV_ACTIVE_F0, TOTAL_BUFFER_SIZE);
-        waitVideoCapture();
-        util::dump(std::begin(buffer_), std::end(buffer_));
-
-        printf("VSync line:\n");
-        startVideoCapture(buffer_, SAV_VSYNC_F0, TOTAL_BUFFER_SIZE);
-        waitVideoCapture();
-        util::dump(std::begin(buffer_), std::end(buffer_));
-    }
-
-    void imageConvertTest()
-    {
-        for (int i = 0; i < 720 / 2; ++i)
-            //            buffer_[i] = 0x01900080 + (0x02020202 * i);
-            buffer_[i] = 0x01800080 + (0x02000200 * i);
-
-        uint32_t tmp[320];
-        graphics::resizeYCbCr420(tmp, 320, buffer_, 720);
-
-        printf("src:\n");
-        util::dump((uint16_t *)buffer_, (uint16_t *)buffer_ + 720, "%04x ");
-        printf("scaled:\n");
-        util::dump(tmp, tmp + 320);
-
-        uint16_t tmp2[320];
-        graphics::convertYCbCr2RGB565(tmp2, tmp, 320);
-
-        printf("rgb:\n");
-        util::dumpF(tmp2, tmp2 + 320, [](int v)
-                    { printf("(%2d, %2d, %2d) ", (v >> 11) & 31, (v >> 5) & 63, v & 31); });
-    }
-};
-
-VideoCapture capture_;
-
-void __not_in_flash_func(videoInTest)()
-{
-    capture_.imageConvertTest();
-    capture_.simpleCaptureTest();
-    while (1)
-    {
-        if (capture_.analyzeSignal())
-        {
-            break;
-        }
-    }
-
-    while (1)
-        ;
-}
-#endif
 
 int main()
 {
@@ -1023,8 +769,6 @@ int main()
     initDMA();
 
     gpio_put(LED_PIN, 1);
-
-    videoInTest();
 
     driver_.init();
 
