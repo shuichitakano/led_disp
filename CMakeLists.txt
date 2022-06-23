@@ -21,6 +21,7 @@ pico_sdk_init()
 
 add_executable(led_disp 
     main.cpp
+    video_capture.cpp
     image_proc.cpp
     framebuffer.cpp
     rgb2serial.S
