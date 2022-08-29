@@ -24,6 +24,8 @@ add_executable(led_disp
     video_capture.cpp
     image_proc.cpp
     framebuffer.cpp
+    adv7181.cpp
+    pca9554.cpp
     rgb2serial.S
     ycbcr2rgb.S
 )
@@ -44,6 +46,7 @@ target_link_libraries(led_disp
     hardware_dma
     hardware_pio
     hardware_interp
+    hardware_i2c
 )
 
 pico_add_extra_outputs(led_disp)
