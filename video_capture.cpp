@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <tuple>
 #include "image_proc.h"
 #include "util.h"
 #include "app.h"
@@ -33,7 +34,7 @@ namespace
         uint32_t counter;
     };
 
-    Timing timingLog_[600];
+    Timing timingLog_[4096];
     Timing *curTimingLog_ = timingLog_;
 
     void resetMark()
@@ -55,7 +56,7 @@ namespace
         ++p;
         while (p != curTimingLog_)
         {
-            printf("%s: %d\n", prev->name, prev->counter - p->counter);
+            printf("%s: %d\n", prev->name, (prev->counter - p->counter) & 0xffffff);
             prev = p++;
         }
 
@@ -67,12 +68,15 @@ void VideoCapture::captureFrame(graphics::FrameBuffer &frameBuffer)
 {
     resetMark();
     mark(currentField_ == 0 ? "wait V0" : "wait V1");
-    // VSync確認
-    // startVideoCapture(buffer_, currentField_ == 0 ? EAV_VSYNC_F1 : EAV_VSYNC_F0, 1);
-    // waitVideoCapture();
-    // mark("v2");
 
     auto activeLineOfs = activeLineOfs_;
+
+#if 0
+    if (currentField_ == 0)
+    {
+        activeLineOfs += 2;
+    }
+#endif
 
     int y = 0;
     if (activeLineOfs < 0)
@@ -88,7 +92,25 @@ void VideoCapture::captureFrame(graphics::FrameBuffer &frameBuffer)
         }
     }
 
-    startVideoCapture(buffer_, currentField_ == 0 ? EAV_VSYNC_F0 : EAV_VSYNC_F1, 1);
+    // VSync確認
+    auto eav = currentField_ == 0 ? EAV_VSYNC_F0 : EAV_VSYNC_F1;
+    startVideoCapture(buffer_, eav, 1);
+
+    auto getNextSAV = [&](uint32_t eav, uint32_t prevSAV) -> uint32_t
+    {
+        switch (eav)
+        {
+        case EAV_ACTIVE_F0:
+            return SAV_ACTIVE_F0;
+
+        case EAV_ACTIVE_F1:
+            return SAV_ACTIVE_F1;
+
+            // case 0x000000ff:
+            //     return prevSAV; /// fallback
+        }
+        return 0;
+    };
 
     auto sav = currentField_ == 0 ? SAV_ACTIVE_F0 : SAV_ACTIVE_F1;
     auto srcPixels = (dataWidthInWords_ << 1) - leftMargin_ - rightMargin_;
@@ -111,6 +133,15 @@ void VideoCapture::captureFrame(graphics::FrameBuffer &frameBuffer)
         waitVideoCapture();
         if (activeLine < activeLines_)
         {
+            eav = video[activeWidth_ >> 1];
+            sav = getNextSAV(eav, sav);
+            if (!sav)
+            {
+                break;
+                printf("error eav = %08x, y %d, al %d\n", eav, y, activeLine);
+                util::dump(video, video + dataWidthInWords_);
+                return;
+            }
             startVideoCapture(captureLine, sav, dataWidthInWords_);
         }
         mark("proc active line");
@@ -122,7 +153,6 @@ void VideoCapture::captureFrame(graphics::FrameBuffer &frameBuffer)
 
             uint32_t resized[DISPLAY_WIDTH];
             graphics::resizeYCbCr420(resized, DISPLAY_WIDTH, video, srcPixels, leftMargin_);
-            // graphics::resizeYCbCr420(resized, DISPLAY_WIDTH, video, 720);
             graphics::convertYCbCr2RGB565(dstBuffer, resized, DISPLAY_WIDTH);
 
             frameBuffer.commitNextLine(lineID);
@@ -143,7 +173,7 @@ void VideoCapture::captureFrame(graphics::FrameBuffer &frameBuffer)
     currentField_ ^= 1;
 
     mark("end");
-    //    dumpTiming();
+    // dumpTiming();
 }
 
 bool VideoCapture::analyzeSignal()
@@ -171,7 +201,8 @@ bool VideoCapture::analyzeSignal()
 
     auto bytebuf = reinterpret_cast<uint8_t *>(buffer_);
 
-    auto [eavActive, activeSize] = findTimingCode(bytebuf, TOTAL_BUFFER_SIZE * 4 - 4);
+    int eavActive, activeSize;
+    std::tie(eavActive, activeSize) = findTimingCode(bytebuf, TOTAL_BUFFER_SIZE * 4 - 4);
     if (eavActive < 0)
     {
         printf("no timing code : random line\n");
@@ -179,8 +210,14 @@ bool VideoCapture::analyzeSignal()
         return false;
     }
 
-    auto [nextCode, hBlankSize] = findTimingCode(bytebuf + activeSize + 4,
-                                                 TOTAL_BUFFER_SIZE * 4 - activeSize - 4);
+    constexpr auto getCodeByte = [](uint32_t codeWord)
+    {
+        return codeWord >> 24;
+    };
+
+    int nextCode, hBlankSize;
+    std::tie(nextCode, hBlankSize) = findTimingCode(bytebuf + activeSize + 4,
+                                                    TOTAL_BUFFER_SIZE * 4 - activeSize - 4);
     if (nextCode < 0)
     {
         printf("no next SAV\n");
@@ -197,17 +234,13 @@ bool VideoCapture::analyzeSignal()
     int analyzeLine = 0;
 
     // Active 期間のライン数を数える
+    nextCode = getCodeByte(EAV_ACTIVE_F0);
     startVideoCapture(buffer_, EAV_ACTIVE_F0, 1);
     waitVideoCapture();
 
     auto t0 = util::getSysTickCounter24();
 
     const int readSizeInWord = ((activeSize + 3) >> 2) + 1 /* eav */;
-
-    constexpr auto getCodeByte = [](uint32_t codeWord)
-    {
-        return codeWord >> 24;
-    };
 
     auto getEAVCode = [&]() -> int
     {
@@ -219,10 +252,31 @@ bool VideoCapture::analyzeSignal()
         return v >> 24;
     };
 
-    int activeLinesF0 = 1;
+    int activeLinesF0 = 0;
     while (1)
     {
-        startVideoCapture(buffer_, SAV_ACTIVE_F0, readSizeInWord);
+        auto getNextSAV = [&]() -> int
+        {
+            switch (nextCode)
+            {
+            case getCodeByte(EAV_ACTIVE_F0):
+                return SAV_ACTIVE_F0;
+
+            case getCodeByte(EAV_ACTIVE_F1):
+                return SAV_ACTIVE_F1;
+            };
+            return 0;
+        };
+
+        auto sav = getNextSAV();
+        if (!sav)
+        {
+            break;
+        }
+
+        lineCodeLog[analyzeLine++] = nextCode;
+
+        startVideoCapture(buffer_, sav, readSizeInWord);
         waitVideoCapture();
 
         nextCode = getEAVCode();
@@ -230,10 +284,6 @@ bool VideoCapture::analyzeSignal()
         {
             printf("error: no timing code (active F0).\n");
             return false;
-        }
-        if (nextCode != getCodeByte(EAV_ACTIVE_F0))
-        {
-            break;
         }
 
         ++activeLinesF0;
@@ -309,7 +359,8 @@ bool VideoCapture::analyzeSignal()
         return false;
     }
 
-    dataWidthInWords_ = activeSize >> 2;
+    activeWidth_ = activeSize >> 1;
+    dataWidthInWords_ = readSizeInWord;
     hBlankSizeInBytes_ = hBlankSize;
     activeLines_ = activeLinesF0;
     vBlankLines_ = vblankLines;
@@ -317,10 +368,11 @@ bool VideoCapture::analyzeSignal()
     vSyncIntervalCycles_ = (t0 - t1) & 0xffffff;
     signalDetected_ = true;
 
-    activeLineOfs_ = (activeLines_ - DISPLAY_HEIGHT) >> 1;
+    // activeLineOfs_ = (activeLines_ - DISPLAY_HEIGHT) >> 1;
+    activeLineOfs_ = 0;
     currentField_ = 0;
 
-    printf("Data width  : %d.\n", activeSize >> 1);
+    printf("Data width  : %d.\n", activeWidth_);
     printf("H blank     : %d.%d.\n", hBlankSize >> 1, hBlankSize & 1 ? 5 : 0);
     printf("Active line : %d\n", activeLinesF0);
     printf("V blank line: %d\n", vblankLines);
@@ -337,14 +389,19 @@ bool VideoCapture::analyzeSignal()
 
 void VideoCapture::simpleCaptureTest()
 {
-    printf("Active line:\n");
-    startVideoCapture(buffer_, SAV_ACTIVE_F0, TOTAL_BUFFER_SIZE);
+    startVideoCapture(buffer_, EAV_VSYNC_F0, 1);
     waitVideoCapture();
+
+    startVideoCapture(buffer_, EAV_ACTIVE_F0, TOTAL_BUFFER_SIZE);
+    waitVideoCapture();
+    printf("Active line:\n");
     util::dump(std::begin(buffer_), std::end(buffer_));
 
-    printf("VSync line:\n");
-    startVideoCapture(buffer_, SAV_VSYNC_F0, TOTAL_BUFFER_SIZE);
+    startVideoCapture(buffer_, EAV_ACTIVE_F0, 1);
     waitVideoCapture();
+    startVideoCapture(buffer_, EAV_VSYNC_F0, TOTAL_BUFFER_SIZE);
+    waitVideoCapture();
+    printf("VSync line:\n");
     util::dump(std::begin(buffer_), std::end(buffer_));
 }
 

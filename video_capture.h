@@ -16,6 +16,7 @@ struct VideoCapture
     uint32_t buffer_[TOTAL_BUFFER_SIZE];
 
     bool signalDetected_ = false;
+    int activeWidth_ = 0;
     int dataWidthInWords_ = 0;
     int hBlankSizeInBytes_ = 0;
     int activeLines_ = 0;

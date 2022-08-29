@@ -9,6 +9,7 @@
 #include <hardware/irq.h>
 #include <hardware/vreg.h>
 #include <hardware/divider.h>
+#include <hardware/i2c.h>
 #include <vector>
 #include <tuple>
 #include <array>
@@ -24,6 +25,8 @@
 #include "framebuffer.h"
 #include "util.h"
 #include "video_capture.h"
+#include "adv7181.h"
+#include "pca9554.h"
 #include "app.h"
 
 namespace
@@ -66,6 +69,7 @@ static constexpr uint32_t PIN_VCLK = 22;
 // I2C
 static constexpr uint32_t PIN_SDA = 26;
 static constexpr uint32_t PIN_SCL = 27;
+auto *i2cIF = i2c1;
 
 #if 0
 #define SLEEP sleep_us(0)
@@ -742,6 +746,9 @@ struct LEDDriver
 
 LEDDriver driver_;
 
+device::ADV7181 adv7181_;
+device::PCA9554 pca9554_;
+
 void __not_in_flash_func(core1_main)()
 {
     driver_.loop();
@@ -768,9 +775,27 @@ int main()
     initPIO();
     initDMA();
 
+    // i2c
+    i2c_init(i2cIF, 100000);
+    gpio_set_function(PIN_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(PIN_SCL, GPIO_FUNC_I2C);
+
+    adv7181_.init(i2cIF);
+    pca9554_.init(i2cIF, device::PCA9554::Type::C);
+
     gpio_put(LED_PIN, 1);
 
     driver_.init();
+
+#if 0
+    driver_.capture_.simpleCaptureTest();
+    while (1)
+        ;
+#endif
+
+    pca9554_.setPortDir(0b00111111);
+    adv7181_.selectInput(device::ADV7181::Input::RGB21);
+    // adv7181_.selectInput(device::ADV7181::Input::COMPONENT);
 
     multicore_launch_core1(core1_main);
     driver_.mainProc();
