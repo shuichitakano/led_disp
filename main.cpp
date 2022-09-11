@@ -35,6 +35,15 @@ namespace
 #include "test_320x240.h"
 }
 
+static constexpr bool LED_PANEL_DRIVER_DEBUG = 0; // パネル駆動だけのデバッグモード
+static constexpr bool ENABLE_VIDEO_BOARD = !LED_PANEL_DRIVER_DEBUG;
+
+#define LED_PANEL_DRIVER_TYPE_SHIFT_ONLY 0
+#define LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH 1
+
+//#define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_ONLY
+#define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
+
 // LED data
 static constexpr uint32_t PIN_R1 = 8;
 static constexpr uint32_t PIN_R2 = 9;
@@ -50,8 +59,14 @@ static constexpr uint32_t PIN_B = 6;
 static constexpr uint32_t PIN_C = 7;
 
 // control
+#if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
+static constexpr uint32_t PIN_LATCH = 1;
+static constexpr uint32_t PIN_FFCLK = 2;
+static constexpr uint32_t PIN_CLK = 3;
+#else
 static constexpr uint32_t PIN_CLK = 2;
 static constexpr uint32_t PIN_FFCLK = 3;
+#endif
 static constexpr uint32_t PIN_LAT = 4;
 static constexpr uint32_t PIN_OE = 28;
 
@@ -93,33 +108,118 @@ static constexpr int PIOIRQ_DATAIDLE = 0;
 
 uint ofsPWM;
 uint ofsVideoIn;
-uint ofsData;
-uint ofsCommand;
+// uint ofsData;
+// uint ofsCommand;
+
+class PIOProgram
+{
+    const pio_program *program_;
+    int ofs_ = -1;
+
+public:
+    PIOProgram(const pio_program *prg)
+        : program_(prg)
+    {
+    }
+
+    int load(pio_hw_t *pio)
+    {
+        if (ofs_ >= 0)
+        {
+            return ofs_;
+        }
+        ofs_ = pio_add_program(pio, program_);
+        return ofs_;
+    }
+
+    void release(pio_hw_t *pio)
+    {
+        if (ofs_ < 0)
+        {
+            return;
+        }
+        pio_remove_program(pio, program_, ofs_);
+        ofs_ = -1;
+    }
+
+    int getOffset() const { return ofs_; }
+};
+
+#if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
+PIOProgram pioPrgCommand{&led_command_with_latch_program};
+PIOProgram pioPrgData{&led_data_with_latch_program};
+#else
+PIOProgram pioPrgCommand{&led_command_program};
+PIOProgram pioPrgData{&led_data_program};
+#endif
+
+void setDataClockDiv()
+{
+    static constexpr int clkdiv25 = CPU_CLOCK_KHZ / 25000;
+    pio_sm_set_clkdiv_int_frac(pioPWM_, SM_PWM, clkdiv25, 0);
+    static constexpr int clkdiv250 = 1;
+#if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
+    constexpr auto div = clkdiv250 * 3;
+#else
+    constexpr auto div = clkdiv250;
+#endif
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA1, div, 0);
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA2, div, 0);
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA3, div, 0);
+    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_COMMAND, div, 0);
+}
+
+void setupPIOCommandProgram()
+{
+    pioPrgData.release(pioDataCmd_);
+    auto ofs = pioPrgCommand.load(pioDataCmd_);
+    assert(ofs >= 0);
+
+#if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
+    initProgramLEDCommandWithLatch(pioDataCmd_, SM_COMMAND, ofs, PIN_RGB_TOP, PIN_LATCH, PIN_LAT);
+#else
+    initProgramLEDCommand(pioDataCmd_, SM_COMMAND, ofs, PIN_RGB_TOP, PIN_CLK, PIN_LAT);
+#endif
+    setDataClockDiv();
+}
+
+void setupPIODataProgram()
+{
+    pioPrgCommand.release(pioDataCmd_);
+    auto ofs = pioPrgData.load(pioDataCmd_);
+    assert(ofs >= 0);
+
+#if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
+    initProgramLEDDataWithLatch1(pioDataCmd_, SM_DATA1, ofs, PIN_R1, PIN_LATCH, PIN_LAT);
+    initProgramLEDDataWithLatch23(pioDataCmd_, SM_DATA2, ofs, PIN_G1);
+    initProgramLEDDataWithLatch23(pioDataCmd_, SM_DATA3, ofs, PIN_B1);
+#else
+    initProgramLEDData1(pioDataCmd_, SM_DATA1, ofs, PIN_R1, PIN_CLK, PIN_LAT);
+    initProgramLEDData23(pioDataCmd_, SM_DATA2, ofs, PIN_G1);
+    initProgramLEDData23(pioDataCmd_, SM_DATA3, ofs, PIN_B1);
+#endif
+    setDataClockDiv();
+}
 
 void initPIO()
 {
     ofsPWM = pio_add_program(pioPWM_, &led_pwm_program);
     ofsVideoIn = pio_add_program(pioPWM_, &capture_bt656_program);
-    ofsData = pio_add_program(pioDataCmd_, &led_data_program);
-    ofsCommand = pio_add_program(pioDataCmd_, &led_command_program);
-    printf("pwm:%d, video:%d data:%d, cmd:%d\n", ofsPWM, ofsVideoIn, ofsData, ofsCommand);
+    // ofsData = pio_add_program(pioDataCmd_, &led_data_program);
+    // ofsCommand = pio_add_program(pioDataCmd_, &led_command_program);
 
     initProgramLEDPWM(pioPWM_, SM_PWM, ofsPWM, PIN_A, PIN_OE);
     initProgramCaptureBT656(pioPWM_, SM_VIDEO_IN, ofsVideoIn, PIN_VD0);
 
-    initProgramLEDData1(pioDataCmd_, SM_DATA1, ofsData, PIN_R1, PIN_CLK, PIN_LAT);
-    initProgramLEDData23(pioDataCmd_, SM_DATA2, ofsData, PIN_G1);
-    initProgramLEDData23(pioDataCmd_, SM_DATA3, ofsData, PIN_B1);
-    initProgramLEDCommand(pioDataCmd_, SM_COMMAND, ofsCommand, PIN_RGB_TOP, PIN_CLK, PIN_LAT);
+    // initProgramLEDData1(pioDataCmd_, SM_DATA1, ofsData, PIN_R1, PIN_CLK, PIN_LAT);
+    // initProgramLEDData23(pioDataCmd_, SM_DATA2, ofsData, PIN_G1);
+    // initProgramLEDData23(pioDataCmd_, SM_DATA3, ofsData, PIN_B1);
+    // initProgramLEDCommand(pioDataCmd_, SM_COMMAND, ofsCommand, PIN_RGB_TOP, PIN_CLK, PIN_LAT);
 
     static constexpr int clkdiv25 = CPU_CLOCK_KHZ / 25000;
     pio_sm_set_clkdiv_int_frac(pioPWM_, SM_PWM, clkdiv25, 0);
-    static constexpr int clkdiv250 = 1;
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA1, clkdiv250, 0);
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA2, clkdiv250, 0);
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_DATA3, clkdiv250, 0);
-    pio_sm_set_clkdiv_int_frac(pioDataCmd_, SM_COMMAND, clkdiv250, 0);
 
+#if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_ONLY
     gpio_set_slew_rate(PIN_R1, GPIO_SLEW_RATE_FAST);
     gpio_set_slew_rate(PIN_G1, GPIO_SLEW_RATE_FAST);
     gpio_set_slew_rate(PIN_B1, GPIO_SLEW_RATE_FAST);
@@ -149,6 +249,7 @@ void initPIO()
     gpio_set_drive_strength(PIN_G2, GPIO_DRIVE_STRENGTH_8MA);
     gpio_set_drive_strength(PIN_B1, GPIO_DRIVE_STRENGTH_8MA);
     gpio_set_drive_strength(PIN_B2, GPIO_DRIVE_STRENGTH_8MA);
+#endif
 #endif
 }
 
@@ -265,6 +366,12 @@ void makeCommand(std::vector<uint32_t> &dst, int nBits, int nH, int r, int g, in
     nBits = (nBits + 3) & ~3;
     int nL = nBits - nH;
     int nPad = nBits - N_CASCADE * 16;
+
+#if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
+    // latch タイミングに合わせてコマンドの byte を１つ前にずらす
+    assert(nPad);
+    --nPad;
+#endif
 
     dst.push_back((nL - 1) | ((nH - 1) << 16));
 
@@ -387,6 +494,10 @@ void __not_in_flash_func(transferData)(const std::array<uint32_t *, 3> &data, si
     // FIFO empty　まち
     waitForDataFIFOEmpty();
 
+#if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
+    ++size; // prologue
+#endif
+
     // DMA 開始
     for (int i = 0; i < 3; ++i)
     {
@@ -418,10 +529,11 @@ void __not_in_flash_func(finishDataTransfer)()
     waitForDataFIFOEmpty();
 
     // 先頭に戻っているのを確認する
+    auto ofs = pioPrgData.getOffset();
     while (1)
     {
         auto pc = pio_sm_get_pc(pioDataCmd_, SM_DATA1);
-        if (pc == ofsData || pc == ofsData + 1)
+        if (pc == ofs || pc == ofs + 1)
         {
             break;
         }
@@ -579,9 +691,14 @@ struct LEDDriver
         auto *line3 = frameBuffer_.getLineBuffer(lineID3);
 
         // 先頭に ラインの繰り返し数
-        dstR[0] = UNIT_WIDTH - 1;
-        dstG[0] = UNIT_WIDTH - 1;
-        dstB[0] = UNIT_WIDTH - 1;
+#if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
+        int loop = UNIT_WIDTH;
+#else
+        int loop = UNIT_WIDTH - 1;
+#endif
+        dstR[0] = loop;
+        dstG[0] = loop;
+        dstB[0] = loop;
 
         graphics::convert4(dstR + 1, dstG + 1, dstB + 1, line0, line1, line2, line3);
 
@@ -615,17 +732,24 @@ struct LEDDriver
             static int frame = 0;
             //            printf("frame %d\n", frame++);
 
+            setupPIOCommandProgram();
+
             // まず VSync 等のコマンドを送る
             sendCommand(command0_.data(), command0_.size());
             finishCommandTransfer();
 
             // ここから scan はじめていいはず
-            startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES, 23);
+            // startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES, 23);
             // todo: 回数はフレームレートから計算する
 
             // 残りのコマンドを送る
             sendCommand(command1_.data(), command1_.size());
             finishCommandTransfer();
+
+            setupPIODataProgram();
+            // コード入れ替え中のクロックが止まる間にPWMクロックを出してはいけない
+            // (仮に)ここからPWM始める
+            startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES, 23);
 
             // データ送出の SM を開始 (DCLK 送出を開始)
             initFrameState();
@@ -684,7 +808,7 @@ struct LEDDriver
         while (true)
         {
             //            printf("%d\n", yofs);
-            if (1)
+            if (!LED_PANEL_DRIVER_DEBUG)
             {
                 if (!capture_.tick(frameBuffer_))
                 {
@@ -736,6 +860,7 @@ struct LEDDriver
             drawStatusLine(fps16, yofs);
 
             frameBuffer_.finishPlane();
+            // printf("y=%d\n", yofs);
 
             ++yofs;
         }
@@ -780,8 +905,11 @@ int main()
     gpio_set_function(PIN_SDA, GPIO_FUNC_I2C);
     gpio_set_function(PIN_SCL, GPIO_FUNC_I2C);
 
-    adv7181_.init(i2cIF);
-    pca9554_.init(i2cIF, device::PCA9554::Type::C);
+    if (ENABLE_VIDEO_BOARD)
+    {
+        adv7181_.init(i2cIF);
+        pca9554_.init(i2cIF, device::PCA9554::Type::C);
+    }
 
     gpio_put(LED_PIN, 1);
 
@@ -793,9 +921,12 @@ int main()
         ;
 #endif
 
-    pca9554_.setPortDir(0b00111111);
-    adv7181_.selectInput(device::ADV7181::Input::RGB21);
-    // adv7181_.selectInput(device::ADV7181::Input::COMPONENT);
+    if (ENABLE_VIDEO_BOARD)
+    {
+        pca9554_.setPortDir(0b00111111);
+        adv7181_.selectInput(device::ADV7181::Input::RGB21);
+        // adv7181_.selectInput(device::ADV7181::Input::COMPONENT);
+    }
 
     multicore_launch_core1(core1_main);
     driver_.mainProc();

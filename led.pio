@@ -240,3 +240,214 @@ initProgramLEDData23(PIO pio, uint sm, uint offset, uint pinData)
 }
 
 %}
+
+
+
+; ---------------------------------
+; send command (Latchあり)
+; out:
+;  - RGB1 RGB2
+; side set:
+;  - LATCH
+;  - FFCLK
+;  - CLK
+; set:
+;  - LAT
+;
+; clk の立ち上がりで fetch
+; out  : BBBBBBBB|CCCCCCCC
+; lout : AAAAAAAB|BBBBBBBC
+; LATCH: ---____-|---____-
+; FFCLK: _-_-_-__|_-_-_-__
+; CLK  : ___----_|___----_
+; 1つ捨てデータが必要
+
+.program led_command_with_latch
+.side_set 3
+
+    out x, 16       side 0b001  ; L count - 1
+    out isr, 16     side 0b001  ; H count - 1
+
+    ; LAT = 0
+loop0:
+    out pins, 8     side 0b001
+    set y, 1        side 0b011
+    set pins, 0     side 0b001
+loop0_:
+    nop             side 0b110
+    jmp y-- loop0_  side 0b100
+    jmp x-- loop0   side 0b001
+
+    ; LAT = 1
+    mov x, isr      side 0b001
+loop1:
+    out pins, 8     side 0b001
+    set y, 1        side 0b011
+    set pins, 1     side 0b001
+loop1_:
+    nop             side 0b110
+    jmp y-- loop1_  side 0b100
+    jmp x-- loop1   side 0b001
+
+    ; 立ち上がったままのLATをC側で戻す事
+
+% c-sdk {
+static inline void
+initProgramLEDCommandWithLatch(PIO pio, uint sm, uint offset,
+                               uint pinData,
+                               uint pinCLKs,
+                               uint pinLAT)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinData, 6, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinCLKs, 3, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinLAT, 1, true);
+
+    for (int i = 0; i < 6; ++i)
+    {
+        pio_gpio_init(pio, pinData + i);
+    }
+    pio_gpio_init(pio, pinCLKs + 0);
+    pio_gpio_init(pio, pinCLKs + 1);
+    pio_gpio_init(pio, pinCLKs + 2);
+    pio_gpio_init(pio, pinLAT + 0);
+
+    pio_sm_config c = led_command_with_latch_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pinData, 6);
+    sm_config_set_set_pins(&c, pinLAT, 1);
+    sm_config_set_sideset_pins(&c, pinCLKs);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, false);
+}
+%}
+
+; ----------------------------------
+; LEDに画像データを送る (Latchあり)
+;
+; out:
+;  - R1 R2
+; side set:
+;  - LATCH
+;  - FFCLK
+;  - CLK
+; set:
+;  - LAT
+;
+; side set, set を指定しない事で ch1, 2 も同じprogramを共用する
+; isr に ピクセルあたりの bit 数 - 1 を入れて実行
+
+.program led_data_with_latch
+.side_set 3
+
+    ; 12.5MHz の周期 80ns
+    ; 250MHz の周期 4ns
+    ; 経験的に
+    ;  setup 36ns
+    ;  hold  32ns
+    ; 以上が必要.
+    ; 36 + 32 = 68
+    ; 1/(160*120*16/2*(68*10^-9)) = 95.74Hz
+    ; 1/(160*120*16/2*(80*10^-9)) = 81.38Hz
+    ;
+    ; #data: FFFFFFFF|00000000
+    ; Data : 0 1 2 3 |0 1 2 3 
+    ; LATCH: ---____-|---____-
+    ; FFCLK: _-_-_-__|_-_-_-__
+    ; CLK  : ___----_|___----_
+    ; LAT  : ________|_-------
+    ; #out : EEEEEEEE|FFFFFFFF
+    ; x    : 11111111|00000000
+    
+    ; LATパルスの数は規定の数である必要がある
+    ; x=0 から始めるがLATを出さない
+    ; 最後に捨てデータを1個入れる
+
+    ; CPU側は
+    ;  - FIFO が空になったのを確認する
+    ;  - DMA を開始する
+    ;  - FIFO が埋まったのを確認する
+    ;  - irq0 が立っているのを確認
+    ;  - irq0 をクリアする
+
+pre_loop:
+    ; データが FIFO にない時はクロックを出し続ける
+    jmp !osre start     side 0b001   [3]
+    jmp pre_loop        side 0b100   [3]
+
+start:
+    irq wait 0 rel      side 0b001
+    out y, 32           side 0b001   ; module width - 1 + 1
+
+    ; 初回
+    set x, 0            side 0b001
+    out pins, 2         side 0b001
+    jmp last_ret        side 0b011
+
+loop_pixel:
+    mov x, isr          side 0b001   ; bits/pixel * nModunes - 1
+
+loop_bit:
+    out pins, 2         side 0b001
+    jmp !x, last        side 0b011   ; 最後のループだけ LAT 1 にする
+last_ret:
+    out pins, 2         side 0b001
+    nop                 side 0b110
+    out pins, 2         side 0b100
+    nop                 side 0b110
+    out pins, 2         side 0b100
+    jmp x-- loop_bit    side 0b001
+  
+    set pins, 0         side 0b001
+    jmp y-- loop_pixel  side 0b001
+
+    out null, 24        side 0b001
+.wrap
+
+last:
+    set pins, 1         side 0b011
+    jmp last_ret        side 0b011
+
+% c-sdk {
+static inline void
+initProgramLEDDataWithLatch1(PIO pio, uint sm, uint offset,
+                             uint pinData,
+                             uint pinCLKs,
+                             uint pinLAT)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinData, 2, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinCLKs, 3, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinLAT, 1, true);
+
+    pio_gpio_init(pio, pinData + 0);
+    pio_gpio_init(pio, pinData + 1);
+    pio_gpio_init(pio, pinCLKs + 0);
+    pio_gpio_init(pio, pinCLKs + 1);
+    pio_gpio_init(pio, pinCLKs + 2);
+    pio_gpio_init(pio, pinLAT + 0);
+
+    pio_sm_config c = led_data_with_latch_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pinData, 2);
+    sm_config_set_set_pins(&c, pinLAT, 1);
+    sm_config_set_sideset_pins(&c, pinCLKs);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, false);
+}
+
+static inline void
+initProgramLEDDataWithLatch23(PIO pio, uint sm, uint offset, uint pinData)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinData, 2, true);
+    pio_gpio_init(pio, pinData + 0);
+    pio_gpio_init(pio, pinData + 1);
+    pio_sm_config c = led_data_with_latch_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pinData, 2);
+    sm_config_set_set_pins(&c, 0, 0); // 出さない
+    sm_config_set_sideset_pins(&c, 30); // 出したく無いので 30,31,0 にアサイン… 
+    // sm_config_set_sideset(&c, 0, false, false); // 出さない
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, false);
+}
+
+%}
