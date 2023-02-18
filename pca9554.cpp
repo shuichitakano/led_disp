@@ -46,4 +46,34 @@ namespace device
         i2c_read_blocking(i2c_, addr_, &data, 1, false);
         return data;
     }
+
+    //
+    void selectAudioInput(PCA9554 &pca9554, SignalInput input)
+    {
+        int v = 0;
+        switch (input)
+        {
+        case SignalInput::COMPOSITE:
+            v = 0;
+            break;
+
+        case SignalInput::S_VIDEO:
+            v = 1;
+            break;
+
+        case SignalInput::COMPONENT:
+            v = 2;
+            break;
+
+        case SignalInput::RGB21:
+            v = 3;
+            break;
+        };
+
+        pca9554.output(v << 6);
+    }
+
+    
+
+
 }

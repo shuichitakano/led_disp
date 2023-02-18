@@ -9,6 +9,7 @@
 void waitVideoCapture();
 void startVideoCapture(uint32_t *dst,
                        uint32_t startCode, uint32_t transferWords);
+void enableVideoCaptureIRQ(bool f);
 
 static constexpr uint32_t CPU_CLOCK_KHZ = 266000;
 // static constexpr uint32_t CPU_CLOCK_KHZ = 250000;

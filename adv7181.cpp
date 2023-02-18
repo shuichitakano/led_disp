@@ -7,6 +7,7 @@
 #include <array>
 #include <cassert>
 #include <cstdio>
+#include "util.h"
 
 namespace
 {
@@ -15,10 +16,12 @@ namespace
     static constexpr std::array<uint8_t, 2> i2cDataRGB_CP_[] = {
         {0x05, 0x00}, // Prim_Mode =000b for SD-M
         {0x06, 0x0A}, // VID_STD=1010b for SD 4x1 525i
+        //{0x06, 0x0B}, // VID_STD=1011b for SD 4x1 625i
         {0x1D, 0x47}, // Enable 28MHz Crystal
         {0x3A, 0x11}, // Set Latch Clock 01b, Power Down ADC3
         {0x3B, 0x81}, // Enable internal Bias
         {0x3C, 0x52}, // PLL_QPUMP to 010b
+        //{0x3C, 0x32}, // PLL_QPUMP to 010b, sync lv 56.25mv
         {0x52, 0x00}, // Colour Space Conversion from RGB->YCrCb
         {0x53, 0x00}, // CSC
         {0x54, 0x12}, // CSC
@@ -47,11 +50,16 @@ namespace
         {0x75, 0xE8}, // Set CH_B and CH_C Gain
         {0x76, 0xFA}, // Set CH_C Gain
         {0x7B, 0x06}, // clears the bits CP_DUP_AV and AV_Blank_EN
-        {0x85, 0x19}, // Turn off SSPD and force SOY. For Eval Board.
+        {0x85, 0x19}, // Turn off SSPD and force SOY.
+        //{0x85, 0x11}, // Turn off SSPD and force CSync.
+        //{0x85, 0x91}, // Turn off SSPD and force CSync, neg pol.
+        //{0x85, 0xb1}, // Turn off SSPD and force CSync, pos pol.
+        //{0x85, 0x02}, // Turn on SSPD.
         {0x86, 0x0B}, // Enable stdi_line_count_mode
         {0x8F, 0x77}, // FR_LL to 1820 & Enable 28.63MHz LLC
         {0x90, 0x1C}, // FR_LL to 1820
-        {0xBF, 0x06}, // Blue Screen Free Run Colour
+        // {0xBF, 0x06}, // Blue Screen Free Run Colour
+        {0xBF, 0x00}, // Blue Screen Free Run Colour
         {0xC0, 0x40}, // default color
         {0xC1, 0xF0}, // default color
         {0xC2, 0x80}, // Default color
@@ -67,6 +75,8 @@ namespace
         {0xC4, 0xF4}, // ADC2 to Ain6 (Pb) and enables manual override of mux, SOG
         // {0xC3, 0x46}, // ADC1 to Ain6 (Pr), ADC0 to Ain10 (Y),
         // {0xC4, 0xF5}, // ADC2 to Ain8 (Pb) and enables manual override of mux, SOG
+        {0x69, 0x40}, // 1.0v sync
+        {0xb3, 0x51}, // free run th
         {},
     };
 
@@ -99,8 +109,8 @@ namespace
         {},
     };
 
-    static constexpr int I2CADDR_CTRL_W = 0x42;
-    static constexpr int I2CADDR_VBI_R = 0x23;
+    static constexpr int I2CADDR_CTRL = 0x42 >> 1;
+    static constexpr int I2CADDR_VBI = 0x23 >> 1;
 }
 
 namespace device
@@ -110,17 +120,18 @@ namespace device
     {
         assert(i2c_);
         static constexpr std::array<uint8_t, 2> data = {0x0f, 0x80};
-        i2c_write_blocking(i2c_, I2CADDR_CTRL_W >> 1, data.data(), data.size(), false);
+        auto r = i2c_write_blocking(i2c_, I2CADDR_CTRL, data.data(), data.size(), false);
+        assert(r >= 0);
 
         sleep_ms(5);
 
         // どうもリセット後の最初のコマンドは失敗するようなので適当な書き込みしておく
         uint8_t reg_st = 0x10;
-        i2c_write_timeout_us(i2c_, I2CADDR_CTRL_W >> 1, &reg_st, 1, false, 1000);
+        i2c_write_timeout_us(i2c_, I2CADDR_CTRL, &reg_st, 1, false, 1000);
     }
 
     void
-    ADV7181::selectInput(Input input)
+    ADV7181::selectInput(SignalInput input)
     {
         assert(i2c_);
         if (input_ == input)
@@ -132,10 +143,10 @@ namespace device
         {
             switch (input)
             {
-            case Input::COMPONENT:
+            case SignalInput::COMPONENT:
                 return i2cDataComponentCP_;
 
-            case Input::RGB21:
+            case SignalInput::RGB21:
                 return i2cDataRGB_CP_;
             };
             return {};
@@ -156,11 +167,216 @@ namespace device
                 {
                     break;
                 }
-                sendCount += i2c_write_blocking(i2c_, I2CADDR_CTRL_W >> 1, data.data(), data.size(), false);
+                auto r = i2c_write_blocking(i2c_, I2CADDR_CTRL, data.data(), data.size(), false);
+                // printf("r = %d [%02x %02x]\n", r, data[0], data[1]);
+                assert(r >= 0);
+                sendCount += r;
             }
 
             printf("done. (%d bytes)\n", sendCount);
         }
+
+        startSTDILineCountMode();
+
+        input_ = input;
     }
 
+    bool ADV7181::sendSingleCommand(uint8_t reg, uint8_t value) const
+    {
+        uint8_t data[] = {reg, value};
+        return i2c_write_blocking(i2c_, I2CADDR_CTRL, data, 2, false) == 2;
+    }
+
+    void ADV7181::startSTDILineCountMode() const
+    {
+        sendSingleCommand(0x86, 0x0b);
+    }
+
+    void ADV7181::setLineLength(int l) const
+    {
+        sendSingleCommand(0x8f, l >> 8);
+        sendSingleCommand(0x90, l);
+    }
+
+    void ADV7181::setRGBSyncModeCSync(bool f) const
+    {
+        sendSingleCommand(0x85, f ? 0x11 : 0x19);
+    }
+
+    void ADV7181::updateStatus()
+    {
+        assert(i2c_);
+        {
+            uint8_t reg = 0x10;
+            // uint8_t reg = 0xb5;
+            i2c_write_blocking(i2c_, I2CADDR_CTRL, &reg, 1, true);
+            i2c_read_blocking(i2c_, I2CADDR_CTRL, statusRegs_, 4, false);
+        }
+        {
+            {
+                uint8_t reg = 0xb1;
+                uint8_t buf[5];
+                i2c_write_blocking(i2c_, I2CADDR_CTRL, &reg, 1, true);
+                i2c_read_blocking(i2c_, I2CADDR_CTRL, buf, 5, false);
+
+                {
+                    auto &s = STDIState_;
+                    s.enabled = buf[0] & 0x80;
+                    s.interlaced = buf[0] & 0x40;
+                    s.blockSize = ((buf[0] & 0x3f) << 8) + buf[1];
+                    s.nLinesInVSync = buf[2] >> 3;
+                    s.nLinesInField = ((buf[2] & 7) << 8) + buf[3];
+                }
+                {
+                    auto &s = SSPDState_;
+                    s.enabled = buf[4] & 0x80;
+                    s.isHSNegative = buf[4] & 0x08;
+                    s.isHSActive = buf[4] & 0x10;
+                    s.isVSNegative = buf[4] & 0x20;
+                    s.isVSActive = buf[4] & 0x40;
+                }
+            }
+            {
+                uint8_t reg = 0xca;
+                uint8_t buf[2];
+                i2c_write_blocking(i2c_, I2CADDR_CTRL, &reg, 1, true);
+                i2c_read_blocking(i2c_, I2CADDR_CTRL, buf, 2, false);
+                STDIState_.nCyclesInField_256 = ((buf[0] & 0x1f) << 8) + buf[1];
+            }
+        }
+    }
+
+    void ADV7181::clearStatusCache()
+    {
+        STDIState_.enabled = false;
+        SSPDState_.enabled = false;
+    }
+
+    void ADV7181::STDIState::dump() const
+    {
+        printf("STDI: %s\n", enabled ? "enabled" : "disabled");
+        if (enabled)
+        {
+            printf(" interlaced: %d\n", interlaced);
+            printf(" VSync: %d lines\n", nLinesInVSync);
+            printf(" Field: %d lines, %d cycles\n", nLinesInField, nCyclesInField_256 << 8);
+            printf(" block size: %d\n", blockSize);
+        }
+    }
+
+    void ADV7181::SSPDState::dump() const
+    {
+        printf("SSPD: %s\n", enabled ? "enabled" : "disabled");
+        if (enabled)
+        {
+            printf(" HS: %sactive, %s\n", isHSActive ? "" : "in", isHSNegative ? "negative" : "positive");
+            printf(" VS: %sactive, %s\n", isVSActive ? "" : "in", isVSNegative ? "negative" : "positive");
+        }
+    }
+
+    bool ADV7181::waitForCounterStable(int timeOutTimeInMS)
+    {
+        enum class State
+        {
+            IDLE,
+            WAIT_ENABLE,
+            WAIT_STABLE1,
+            WAIT_STABLE2,
+            WAIT_STABLE3,
+        };
+
+        STDIState prevSTDI{};
+        State state{};
+
+        while (true)
+        {
+            auto isEnableSTDI = [&]
+            {
+                return getSTDIState().enabled;
+            };
+
+            auto next = [&]
+            {
+                state = static_cast<State>(static_cast<int>(state) + 1);
+            };
+
+            int wait = 1;
+            auto computeWait = [&]
+            {
+                // 28.63MHz/256 のカウンタでの周期の2.5倍 (Frame + margin 0.5)
+                wait = getSTDIState().nCyclesInField_256 * 1000 * 5 / (28636363 / 256 * 2);
+                // printf("wait = %d\n", wait);
+            };
+
+            switch (state)
+            {
+            case State::IDLE:
+                startSTDILineCountMode();
+                next();
+                break;
+
+            case State::WAIT_ENABLE:
+                if (isEnableSTDI())
+                {
+                    prevSTDI = getSTDIState();
+                    computeWait();
+                    next();
+                }
+                else if (timeOutTimeInMS < 0)
+                {
+                    return false;
+                }
+                break;
+
+            case State::WAIT_STABLE1:
+            case State::WAIT_STABLE2:
+            case State::WAIT_STABLE3:
+                if (!isEnableSTDI() || !test(prevSTDI, getSTDIState(), 10))
+                {
+                    return false;
+                }
+
+                if (state == State::WAIT_STABLE3)
+                {
+                    return true;
+                }
+                computeWait();
+                next();
+                break;
+            };
+
+#if 0
+            if (isEnableSTDI())
+            {
+                printf("%d:\n", (int)state);
+                getSTDIState().dump();
+            }
+#endif
+
+            sleep_ms(wait);
+            timeOutTimeInMS -= wait;
+
+            updateStatus();
+        }
+        return false;
+    }
+
+    bool
+    test(const ADV7181::STDIState &a,
+         const ADV7181::STDIState &b,
+         int cycleMarginPerLine)
+    {
+        auto check = [](int va, int vb, int m)
+        {
+            auto d = va - vb;
+            return d > -m && d < m;
+        };
+
+        return (a.enabled == b.enabled &&
+                a.interlaced == b.interlaced &&
+                a.nLinesInVSync == b.nLinesInVSync &&
+                a.nLinesInField == b.nLinesInField &&
+                check(a.nCyclesInField_256, b.nCyclesInField_256, a.nLinesInField * cycleMarginPerLine / 256) &&
+                check(a.blockSize, b.blockSize, cycleMarginPerLine * 8));
+    }
 }
