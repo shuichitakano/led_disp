@@ -22,6 +22,8 @@ pico_sdk_init()
 add_executable(led_disp 
     main.cpp
     video_capture.cpp
+    video_stream.cpp
+    video_stream_buffer.cpp
     image_proc.cpp
     framebuffer.cpp
     adv7181.cpp

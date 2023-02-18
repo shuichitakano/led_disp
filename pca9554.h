@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include <hardware/i2c.h>
+#include "device_def.h"
 
 namespace device
 {
@@ -32,4 +33,6 @@ namespace device
         void output(uint8_t bits) const;
         int input() const;
     };
+
+    void selectAudioInput(PCA9554 &pca9554, SignalInput input);
 }

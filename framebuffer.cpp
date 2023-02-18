@@ -59,7 +59,7 @@ namespace graphics
     {
         {
             std::lock_guard lock(freeLock_);
-            freeLines_.insert(freeLines_.begin(),
+            freeLines_.insert(freeLines_.end(),
                               indices.begin(), indices.end());
         }
         __sev();

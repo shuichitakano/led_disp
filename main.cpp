@@ -1,4 +1,4 @@
-//#include <stdio.h>
+// #include <stdio.h>
 #include <stdint.h>
 
 #include <pico/stdlib.h>
@@ -24,6 +24,8 @@
 #include "bmp.h"
 #include "framebuffer.h"
 #include "util.h"
+#include "video_stream_buffer.h"
+#include "video_stream.h"
 #include "video_capture.h"
 #include "adv7181.h"
 #include "pca9554.h"
@@ -31,7 +33,7 @@
 
 namespace
 {
-    //#include "test.h"
+    // #include "test.h"
 #include "test_320x240.h"
 }
 
@@ -41,7 +43,7 @@ static constexpr bool ENABLE_VIDEO_BOARD = !LED_PANEL_DRIVER_DEBUG;
 #define LED_PANEL_DRIVER_TYPE_SHIFT_ONLY 0
 #define LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH 1
 
-//#define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_ONLY
+// #define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_ONLY
 #define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
 
 // LED data
@@ -555,7 +557,7 @@ void __not_in_flash_func(startVideoCapture)(uint32_t *dst,
                                             uint32_t startCode, uint32_t transferWords)
 {
     assert(transferWords > 0);
-    waitVideoCapture();
+    // waitVideoCapture();
 
     dma_channel_set_trans_count(dmaChVideoIn, transferWords, false);
     dma_channel_set_write_addr(dmaChVideoIn, dst, true);
@@ -571,6 +573,9 @@ struct LEDDriver;
 namespace
 {
     LEDDriver *LEDDriverInst_{};
+
+    device::ADV7181 adv7181_;
+    device::PCA9554 pca9554_;
 }
 
 struct LEDDriver
@@ -594,7 +599,7 @@ struct LEDDriver
     uint32_t dataBuffer_[N_DATA_BUFFERS][N_RGB_CH][UNIT_DATA_BUFFER_SIZE + 2]; // 22.5KB
 
     graphics::FrameBuffer frameBuffer_;
-    VideoCapture capture_;
+    video::VideoCapture capture_;
 
     void init()
     {
@@ -749,11 +754,14 @@ struct LEDDriver
             setupPIODataProgram();
             // コード入れ替え中のクロックが止まる間にPWMクロックを出してはいけない
             // (仮に)ここからPWM始める
-            startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES, 23);
+            // startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES, 23);
 
             // データ送出の SM を開始 (DCLK 送出を開始)
             initFrameState();
             startDataTransfer();
+
+            // clk出るまでPWM始めない
+            startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES, 23);
 
             int dbid = 0;
             for (int i = 0; i < N_SCAN_LINES; ++i)
@@ -785,9 +793,15 @@ struct LEDDriver
 
     void __not_in_flash_func(drawStatusLine)(int fps16, int ct)
     {
+        bool prevStatusEnabled = adv7181_.getSTDIState().enabled;
+        adv7181_.updateStatus();
+
         char str[41];
         int nch = snprintf(str, sizeof(str),
-                           "%d %d.%dFPS",
+                           "%02X %02X %02X %d %d.%dFPS",
+                           adv7181_.getStatus1(),
+                           adv7181_.getStatus2(),
+                           adv7181_.getStatus3(),
                            ct,
                            fps16 >> 4, ((fps16 & 15) * 10) >> 4);
         int xofs = 320 - 2 - nch * 8;
@@ -798,19 +812,96 @@ struct LEDDriver
                 graphics::compositeFont(p, xofs, 320, i, str);
             }
         }
+
+        if (!prevStatusEnabled && adv7181_.getSTDIState().enabled)
+        {
+            adv7181_.getSTDIState().dump();
+            adv7181_.getSSPDState().dump();
+        }
+    }
+
+    void __not_in_flash_func(captureDMAIRQHandler)(uint32_t time)
+    {
+        if (dma_hw->ints1 & (1 << dmaChVideoIn))
+        {
+            dma_hw->ints1 = 1 << dmaChVideoIn;
+
+            hw_divider_state_t divState;
+            hw_divider_save_state(&divState);
+
+            if (!capture_.irq(time))
+            {
+                enableVideoCaptureIRQ(false);
+            }
+
+            hw_divider_restore_state(&divState);
+        }
+    }
+
+    static void __isr __not_in_flash_func(captureDMAIRQHandlerEntry)()
+    {
+        auto t = util::getSysTickCounter24();
+        LEDDriverInst_->captureDMAIRQHandler(t);
+    }
+
+    void setVideoCaptureIRQ()
+    {
+        irq_set_exclusive_handler(DMA_IRQ_1, captureDMAIRQHandlerEntry);
+        irq_set_enabled(DMA_IRQ_1, true);
+
+        enableVideoCaptureIRQ(false);
     }
 
     void __not_in_flash_func(mainProc)()
     {
+        setVideoCaptureIRQ();
+
         int yofs = 0;
         auto prevTick = util::getSysTickCounter24();
+
+        int prevButtons = 0xf;
+
+        int cursorLine = 120;
 
         while (true)
         {
             //            printf("%d\n", yofs);
             if (!LED_PANEL_DRIVER_DEBUG)
             {
-                if (!capture_.tick(frameBuffer_))
+                auto curButtons = pca9554_.input();
+
+                // printf("bt %d\n", curButtons);
+                if (device::isButtonEdge(curButtons, prevButtons, device::Button::CENTER))
+                {
+                    printf("scan\n");
+                    capture_.resetSignalDetection();
+                    adv7181_.clearStatusCache();
+                }
+
+                // if (device::isButtonEdge(curButtons, prevButtons, device::Button::RIGHT))
+                // {
+                //     adv7181_.getSTDIState().dump();
+                //     adv7181_.getSSPDState().dump();
+                // }
+
+                if (device::isButtonEdge(curButtons, prevButtons, device::Button::UP))
+                {
+                    --cursorLine;
+                }
+                if (device::isButtonEdge(curButtons, prevButtons, device::Button::DOWN))
+                {
+                    ++cursorLine;
+                }
+                capture_.setCursorLine(cursorLine);
+
+                if (device::isButtonEdge(curButtons, prevButtons, device::Button::RIGHT))
+                {
+                    capture_.requestDumpLine(cursorLine);
+                }
+
+                prevButtons = curButtons;
+
+                if (!capture_.tick(frameBuffer_, adv7181_))
                 {
                     continue;
                 }
@@ -857,7 +948,7 @@ struct LEDDriver
 
             //            printf("%d %d\n", fps16 >> 4, yofs);
 
-            drawStatusLine(fps16, yofs);
+            drawStatusLine(fps16, cursorLine);
 
             frameBuffer_.finishPlane();
             // printf("y=%d\n", yofs);
@@ -869,10 +960,18 @@ struct LEDDriver
 
 ////////////////////////
 
-LEDDriver driver_;
+void __not_in_flash_func(enableVideoCaptureIRQ)(bool f)
+{
+    dma_hw->ints1 = 1 << dmaChVideoIn;
+    dma_channel_set_irq1_enabled(dmaChVideoIn, f);
+}
 
-device::ADV7181 adv7181_;
-device::PCA9554 pca9554_;
+namespace
+{
+    LEDDriver driver_;
+}
+
+////////////////////////
 
 void __not_in_flash_func(core1_main)()
 {
@@ -901,7 +1000,7 @@ int main()
     initDMA();
 
     // i2c
-    i2c_init(i2cIF, 100000);
+    i2c_init(i2cIF, 400000);
     gpio_set_function(PIN_SDA, GPIO_FUNC_I2C);
     gpio_set_function(PIN_SCL, GPIO_FUNC_I2C);
 
@@ -924,8 +1023,11 @@ int main()
     if (ENABLE_VIDEO_BOARD)
     {
         pca9554_.setPortDir(0b00111111);
-        adv7181_.selectInput(device::ADV7181::Input::RGB21);
-        // adv7181_.selectInput(device::ADV7181::Input::COMPONENT);
+
+        auto defaultInput = device::SignalInput::RGB21;
+        // auto defaultInput = device::SignalInput::COMPONENT;
+        adv7181_.selectInput(defaultInput);
+        device::selectAudioInput(pca9554_, defaultInput);
     }
 
     multicore_launch_core1(core1_main);
