@@ -36,6 +36,11 @@ loop_pwm2:
     set pins, 0b111         side 0  [15]
     set pins, 0b000         side 0
 
+; (2 * clockCount + 5 + 13 + 15*2) * (lineCount - 1) + 6 + 2 + 15 * 2 + 2 * clockCount
+; (2 * 74 + 5 + 13 + 15*2) * (60 - 1) + 6 + 2 + 15*2 + 2 * 60 = 11722 cycle
+; 26.600MHzのとき 26600000/11722 = 2269.237 Hz
+; 2269/60=37.8回
+
 % c-sdk {
 static inline void
 initProgramLEDPWM(PIO pio, uint sm, uint offset,

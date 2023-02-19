@@ -93,6 +93,8 @@ namespace video
         void requestDumpLine(int i) { dumpLineReq_ = i; }
         void setCursorLine(int i) { cursorLine_ = i; }
 
+        uint32_t getFieldIntervalCycles() const { return frameIntervalCycles_ >> 1; }
+
     private:
         void __not_in_flash_func(startCaptureLine)(BT656TimingCode sav, uint32_t time);
         void startBGCapture();
