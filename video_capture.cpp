@@ -25,6 +25,7 @@ namespace video
         if (signalDetected_ && test(currentSTDIState_, adv7181.getSTDIState(), 10))
         {
             captureFrame2(frameBuffer);
+            adv7181.updateStatus();
             return true;
         }
         else
@@ -36,7 +37,7 @@ namespace video
                 constexpr int timeout = 100; // ms
                 if (adv7181.getCurrentInput() == device::SignalInput::RGB21)
                 {
-                    for (auto csync : {false, true})
+                    for (auto csync : {true, false})
                     {
                         adv7181.setRGBSyncModeCSync(csync);
                         if (adv7181.waitForCounterStable(timeout))

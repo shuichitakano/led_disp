@@ -155,10 +155,15 @@ PIOProgram pioPrgCommand{&led_command_program};
 PIOProgram pioPrgData{&led_data_program};
 #endif
 
+constexpr int getPWMPIOClockDiv()
+{
+    return CPU_CLOCK_KHZ / 25000;
+}
+
 void setDataClockDiv()
 {
-    static constexpr int clkdiv25 = CPU_CLOCK_KHZ / 25000;
-    pio_sm_set_clkdiv_int_frac(pioPWM_, SM_PWM, clkdiv25, 0);
+    pio_sm_set_clkdiv_int_frac(pioPWM_, SM_PWM, getPWMPIOClockDiv(), 0);
+
     static constexpr int clkdiv250 = 1;
 #if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
     constexpr auto div = clkdiv250 * 3;
@@ -336,6 +341,12 @@ void __not_in_flash_func(startLEDPWM)(int clocksPerLine, int nLines, int n)
 
     dma_channel_configure(dmaChPWM, &cfg, &pioPWM_->txf[SM_PWM],
                           &dmaPWMData, n, true);
+}
+
+constexpr int computeLEDPWMCycle(int clocksPerLine, int nLines)
+{
+    auto c = (2 * clocksPerLine + 5 + 13 + 15 * 2) * (nLines - 1) + 6 + 2 + 15 * 2 + 2 * clocksPerLine;
+    return c * getPWMPIOClockDiv();
 }
 
 void __not_in_flash_func(finishLEDPWM)()
@@ -601,6 +612,8 @@ struct LEDDriver
     graphics::FrameBuffer frameBuffer_;
     video::VideoCapture capture_;
 
+    int currentRefreshPerField_ = 0; // 1フィールドあたりのPWM更新回数
+
     void init()
     {
         LEDDriverInst_ = this;
@@ -734,8 +747,7 @@ struct LEDDriver
 
         while (1)
         {
-            static int frame = 0;
-            //            printf("frame %d\n", frame++);
+            auto t0 = util::getSysTickCounter24();
 
             setupPIOCommandProgram();
 
@@ -760,8 +772,15 @@ struct LEDDriver
             initFrameState();
             startDataTransfer();
 
+            auto t1 = util::getSysTickCounter24();
+            auto dt10 = (t0 - t1) & 0xffffff;
+            int leftCycle = capture_.getFieldIntervalCycles() - dt10;
+            constexpr auto cyclePWM = computeLEDPWMCycle(PWM_PULSE_PER_LINE, N_SCAN_LINES);
+            auto nPWM = std::max(1, (leftCycle - (cyclePWM >> 3)) / cyclePWM); // 1/8周期マージン
+            currentRefreshPerField_ = nPWM;
+
             // clk出るまでPWM始めない
-            startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES, 23);
+            startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES, nPWM);
 
             int dbid = 0;
             for (int i = 0; i < N_SCAN_LINES; ++i)
@@ -793,9 +812,6 @@ struct LEDDriver
 
     void __not_in_flash_func(drawStatusLine)(int fps16, int ct)
     {
-        bool prevStatusEnabled = adv7181_.getSTDIState().enabled;
-        adv7181_.updateStatus();
-
         char str[41];
         int nch = snprintf(str, sizeof(str),
                            "%02X %02X %02X %d %d.%dFPS",
@@ -811,12 +827,6 @@ struct LEDDriver
             {
                 graphics::compositeFont(p, xofs, 320, i, str);
             }
-        }
-
-        if (!prevStatusEnabled && adv7181_.getSTDIState().enabled)
-        {
-            adv7181_.getSTDIState().dump();
-            adv7181_.getSSPDState().dump();
         }
     }
 
@@ -948,7 +958,8 @@ struct LEDDriver
 
             //            printf("%d %d\n", fps16 >> 4, yofs);
 
-            drawStatusLine(fps16, cursorLine);
+            // drawStatusLine(fps16, cursorLine);
+            drawStatusLine(fps16, currentRefreshPerField_);
 
             frameBuffer_.finishPlane();
             // printf("y=%d\n", yofs);
