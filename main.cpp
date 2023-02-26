@@ -812,12 +812,16 @@ struct LEDDriver
 
     void __not_in_flash_func(drawStatusLine)(int fps16, int ct)
     {
+        auto s2 = adv7181_.getStatus2();
         char str[41];
         int nch = snprintf(str, sizeof(str),
-                           "%02X %02X %02X %d %d.%dFPS",
-                           adv7181_.getStatus1(),
-                           adv7181_.getStatus2(),
-                           adv7181_.getStatus3(),
+                           "F%d L%d [%d:%d][%d:%d] %d %d.%dFPS",
+                           adv7181_.isFreeRun(),
+                           adv7181_.isPLLLocked(),
+                           capture_.getLeftMargin(),
+                           capture_.getRightMargin(),
+                           capture_.getTopBound(),
+                           capture_.getBottomBound(),
                            ct,
                            fps16 >> 4, ((fps16 & 15) * 10) >> 4);
         int xofs = 320 - 2 - nch * 8;
@@ -828,6 +832,10 @@ struct LEDDriver
                 graphics::compositeFont(p, xofs, 320, i, str);
             }
         }
+        // if (!adv7181_.isPLLLocked() || adv7181_.isFreeRun())
+        // {
+        //     printf("%d %d\n", adv7181_.isFreeRun(), adv7181_.isPLLLocked());
+        // }
     }
 
     void __not_in_flash_func(captureDMAIRQHandler)(uint32_t time)
@@ -894,6 +902,7 @@ struct LEDDriver
                 //     adv7181_.getSSPDState().dump();
                 // }
 
+#if 0
                 if (device::isButtonEdge(curButtons, prevButtons, device::Button::UP))
                 {
                     --cursorLine;
@@ -908,6 +917,25 @@ struct LEDDriver
                 {
                     capture_.requestDumpLine(cursorLine);
                 }
+#endif
+#if 1
+                if (device::isButtonEdge(curButtons, prevButtons, device::Button::LEFT))
+                {
+                    capture_.setHDiv(capture_.getHDiv() - 1, adv7181_);
+                }
+                else if (device::isButtonEdge(curButtons, prevButtons, device::Button::RIGHT))
+                {
+                    capture_.setHDiv(capture_.getHDiv() + 1, adv7181_);
+                }
+                if (device::isButtonEdge(curButtons, prevButtons, device::Button::DOWN))
+                {
+                    capture_.requestDumpLine(cursorLine);
+                }
+                if (device::isButtonEdge(curButtons, prevButtons, device::Button::UP))
+                {
+                    capture_.requestLog();
+                }
+#endif
 
                 prevButtons = curButtons;
 
@@ -959,7 +987,8 @@ struct LEDDriver
             //            printf("%d %d\n", fps16 >> 4, yofs);
 
             // drawStatusLine(fps16, cursorLine);
-            drawStatusLine(fps16, currentRefreshPerField_);
+            // drawStatusLine(fps16, currentRefreshPerField_);
+            drawStatusLine(fps16, capture_.getHDiv());
 
             frameBuffer_.finishPlane();
             // printf("y=%d\n", yofs);
@@ -1039,6 +1068,8 @@ int main()
         // auto defaultInput = device::SignalInput::COMPONENT;
         adv7181_.selectInput(defaultInput);
         device::selectAudioInput(pca9554_, defaultInput);
+
+        // adv7181_.setPLL(true, false, 900, 15980);
     }
 
     multicore_launch_core1(core1_main);

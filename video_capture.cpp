@@ -16,6 +16,8 @@
 #include "util.h"
 #include "app.h"
 
+#define ENABLE_CURSOR 0
+
 namespace video
 {
 
@@ -37,7 +39,8 @@ namespace video
                 constexpr int timeout = 100; // ms
                 if (adv7181.getCurrentInput() == device::SignalInput::RGB21)
                 {
-                    for (auto csync : {true, false})
+                    // for (auto csync : {true, false})
+                    auto csync = isCSync_;
                     {
                         adv7181.setRGBSyncModeCSync(csync);
                         if (adv7181.waitForCounterStable(timeout))
@@ -65,12 +68,18 @@ namespace video
                 {
                     measureInterval();
                     baseCycleCounter_ = -1;
+                    // hdiv_ = DEFAULT_HDIV;
 
                     startBGCapture();
+                }
+                else
+                {
+                    isCSync_ ^= true;
                 }
             }
             else
             {
+                isCSync_ ^= true;
                 printf("video signal is not stabled.\n");
             }
         }
@@ -78,6 +87,15 @@ namespace video
     }
 
     ////
+
+    void
+    VideoCapture::setHDiv(int v, device::ADV7181 &adv7181)
+    {
+        hdiv_ = v;
+
+        auto hfreq = (CPU_CLOCK_KHZ * 1000) / (lineIntervalCycles128_ >> 7);
+        adv7181.setPLL(true, false, v, hfreq);
+    }
 
     void
     VideoCapture::startCaptureLine(BT656TimingCode sav, uint32_t time)
@@ -173,6 +191,46 @@ namespace video
     }
 
     void
+    VideoCapture::updateBound(const uint32_t *data, int line)
+    {
+        const auto *p = reinterpret_cast<const uint8_t *>(data);
+        auto isBlack = [this](int v)
+        {
+            return v <= blackLevel_;
+        };
+
+        auto getLuminance = [&](int x)
+        {
+            return p[x * 2 + 1];
+        };
+
+        // if (line > topBound_ && line < bottomBound_)
+        if (line > 64 && line < 176)
+        {
+
+            if (leftMargin_ > 0 && !isBlack(getLuminance(leftMargin_ - 1)))
+            {
+                --leftMargin_;
+            }
+            if (rightMargin_ > 0 && !isBlack(getLuminance(720 - rightMargin_)))
+            {
+                --rightMargin_;
+            }
+        }
+
+        auto hasVideo = !isBlack(getLuminance(360));
+        if (line < topBound_ && hasVideo)
+        {
+            --topBound_;
+        }
+        if (line > bottomBound_ && hasVideo)
+        {
+            ++bottomBound_;
+        }
+        // todo: limitつけたほうがいい
+    }
+
+    void
     VideoCapture::captureFrame2(graphics::FrameBuffer &frameBuffer)
     {
         // buffer_.reset();
@@ -189,7 +247,8 @@ namespace video
             return hw_divider_u32_remainder_inlined(line_x2 + baseOfs_x2, frameInterval_x2) - halfFrameInterval_x2;
         };
 
-        auto nSrcPixels = (dataWidthInWords_ << 1) - leftMargin_ - rightMargin_;
+        // auto nSrcPixels = (dataWidthInWords_ << 1) - leftMargin_ - rightMargin_;
+        auto nSrcPixels = 720 - leftMargin_ - rightMargin_;
 
         graphics::setupResizeYCbCr420Config(DISPLAY_WIDTH, nSrcPixels, leftMargin_);
 
@@ -215,6 +274,7 @@ namespace video
             auto [line, linfo] = buffer_.getCurrentReadLine();
             auto l = adjustLine(linfo.lineIdx_x2) >> 1;
             // printf("l = %d, %d\n", l, linfo.lineIdx_x2);
+            updateBound(line.data(), l + activeLineOfs_);
             if (l < y)
             {
                 continue;
@@ -255,10 +315,12 @@ namespace video
                     graphics::resizeYCbCr420PreConfig(resized, DISPLAY_WIDTH, line.data());
                     graphics::convertYCbCr2RGB565(dstBuffer, resized, DISPLAY_WIDTH);
 
+#if ENABLE_CURSOR
                     if (cursorLine_ == y)
                     {
                         dstBuffer[DISPLAY_WIDTH - 32] = 0xaa55;
                     }
+#endif
                 }
 
                 frameBuffer.commitNextLine(dstLineID);
@@ -283,11 +345,15 @@ namespace video
 
         assert(y == DISPLAY_HEIGHT);
 
-#if 0
-        for (int i = 0; i < ilog; ++i)
+#if 1
+        if (logReq_)
         {
-            auto &l = logs[i];
-            printf("%d: l %d, tw %d, ta %d, tp %d\n", i, l.line, l.tWait, l.tAlloc, l.tProc);
+            for (int i = 0; i < ilog; ++i)
+            {
+                auto &l = logs[i];
+                printf("%d: l %d, tw %d, ta %d, tp %d\n", i, l.line, l.tWait, l.tAlloc, l.tProc);
+            }
+            logReq_ = false;
         }
 #endif
 
@@ -754,6 +820,14 @@ namespace video
         //  activeLines_ = fields[0].activeLines;
         startLine_ = 0;
         currentField_ = 0;
+
+        constexpr int defaultLRMargin = (720 - 512) / 2;
+        leftMargin_ = defaultLRMargin;
+        rightMargin_ = defaultLRMargin;
+
+        constexpr int defaultTBMargin = 40;
+        topBound_ = defaultTBMargin;
+        bottomBound_ = 240 - defaultTBMargin;
 
         //    activeLines_ /= 2;
 

@@ -41,14 +41,19 @@ namespace video
         int startLine_ = 0;     // 表示開始ライン
         int activeLines_ = 0;   // 表示ライン数
 
-        int leftMargin_ = 40;
-        int rightMargin_ = 40;
+        int16_t leftMargin_ = 0;
+        int16_t rightMargin_ = 0;
+        int16_t topBound_ = 0;
+        int16_t bottomBound_ = 0;
 
         int currentField_ = 0;
         int deviatedFrames_ = 0;    // V同期しなかった連続フレーム数
         int baseCycleCounter_ = -1; // V頭のサイクルカウンタ
 
         uint32_t baseTime_ = 0;
+
+        uint8_t blackLevel_ = 0x60; // これ以下で黒
+        uint8_t isCSync_ = false;
 
         static constexpr uint32_t SAV_ACTIVE_F0 = 0x800000ff;
         static constexpr uint32_t SAV_ACTIVE_F1 = 0xc70000ff;
@@ -68,6 +73,10 @@ namespace video
 
         int cursorLine_ = -1;
         int dumpLineReq_ = -1;
+        bool logReq_ = false;
+
+        static inline constexpr int DEFAULT_HDIV = 858;
+        int hdiv_ = DEFAULT_HDIV;
 
         device::ADV7181::STDIState currentSTDIState_{};
 
@@ -91,14 +100,25 @@ namespace video
         bool __not_in_flash_func(irq)(uint32_t time);
 
         void requestDumpLine(int i) { dumpLineReq_ = i; }
+        void requestLog() { logReq_ = true; }
+
         void setCursorLine(int i) { cursorLine_ = i; }
+        int getHDiv() const { return hdiv_; }
+        void setHDiv(int v, device::ADV7181 &adv7181);
 
         uint32_t getFieldIntervalCycles() const { return frameIntervalCycles_ >> 1; }
+
+        int getLeftMargin() const { return leftMargin_; }
+        int getRightMargin() const { return rightMargin_; }
+        int getTopBound() const { return topBound_; }
+        int getBottomBound() const { return bottomBound_; }
 
     private:
         void __not_in_flash_func(startCaptureLine)(BT656TimingCode sav, uint32_t time);
         void startBGCapture();
         void stopBGCapture();
+
+        void updateBound(const uint32_t *data, int line);
     };
 
 }

@@ -14,8 +14,8 @@ namespace video
     class VideoStreamBuffer
     {
     public:
-        static constexpr uint32_t UNIT_BUFFER_SIZE = 512;
-        static constexpr uint32_t WRITE_RING_SIZE = 8; // 2のベキ
+        static constexpr uint32_t UNIT_BUFFER_SIZE = 512; // 1024pix
+        static constexpr uint32_t WRITE_RING_SIZE = 8;    // 2のベキ
         static constexpr uint32_t N_BUFFERS = 8;
         static constexpr uint32_t TOTAL_BUFFER_SIZE = UNIT_BUFFER_SIZE * N_BUFFERS;
 

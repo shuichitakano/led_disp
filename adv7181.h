@@ -47,11 +47,17 @@ namespace device
         int getStatus1() const { return statusRegs_[0]; }
         int getStatus2() const { return statusRegs_[2]; }
         int getStatus3() const { return statusRegs_[3]; }
+        bool isPLLLocked() const;
+        bool isFreeRun() const;
+
         void clearStatusCache();
 
         void startSTDILineCountMode() const;
+        void stopSTDILineCountMode() const;
+
         void setLineLength(int l) const;
         void setRGBSyncModeCSync(bool f) const;
+        void setPLL(bool manual, bool immediate, int div, int hFreq) const;
 
         bool waitForCounterStable(int timeOutTimeInMS);
 
