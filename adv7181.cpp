@@ -7,6 +7,7 @@
 #include <array>
 #include <cassert>
 #include <cstdio>
+#include <tuple>
 #include "util.h"
 
 namespace
@@ -17,8 +18,11 @@ namespace
         {0x05, 0x00}, // Prim_Mode =000b for SD-M
         {0x06, 0x0A}, // VID_STD=1010b for SD 4x1 525i
         //{0x06, 0x0B}, // VID_STD=1011b for SD 4x1 625i
+        //{0x06, 0x0C}, // VID_STD=1010b for SD 1x1 525i
+        //{0x06, 0x0E}, // VID_STD=1010b for SD 2x1 525i
         {0x1D, 0x47}, // Enable 28MHz Crystal
         {0x3A, 0x11}, // Set Latch Clock 01b, Power Down ADC3
+        //{0x3A, 0x21}, // Set Latch Clock 10b (>55MHz), Power Down ADC3
         {0x3B, 0x81}, // Enable internal Bias
         {0x3C, 0x52}, // PLL_QPUMP to 010b
         //{0x3C, 0x32}, // PLL_QPUMP to 010b, sync lv 56.25mv
@@ -65,18 +69,32 @@ namespace
         {0xC2, 0x80}, // Default color
         {0xC5, 0x01}, // CP_CLAMP_AVG_FACTOR[1-0] = 00b
         {0xC9, 0x0C}, // Enable DDR Mode
-        {0xF3, 0x07}, // Enable Anti Alias Filter on ADC 0,1,2
+        //{0xF3, 0x07}, // Enable Anti Alias Filter on ADC 0,1,2
+        {0xF3, 0x00}, // Disable Anti Alias Filter
+#if 1
         {0x0E, 0x80}, // ADI Recommended Setting
         {0x52, 0x46}, // ADI Recommended Setting
         {0x54, 0x80}, // ADI Recommended Setting
         {0xF6, 0x3B}, // ADI Recommended Setting
         {0x0E, 0x00}, // ADI Recommended Setting
+#else
+        {0x05, 0x01}, // Comp
+        {0x06, 0x00}, // 525i
+        {0x3C, 0x53}, // PLL_QPUMP to 011b
+        {0xB7, 0x1B}, // ADI Recommended
+        {0x0E, 0x80}, // ADI recommended sequence
+        {0x52, 0x46}, // ADI recommended sequence
+        {0x54, 0x80}, // ADI Recommended Setting
+        {0xF6, 0x3B}, // ADI Recommended Setting
+        {0x0E, 0x00}, // ADI recommended sequence
+#endif
         {0xC3, 0x56}, // ADC1 to Ain8 (Pr), ADC0 to Ain10 (Y),
         {0xC4, 0xF4}, // ADC2 to Ain6 (Pb) and enables manual override of mux, SOG
         // {0xC3, 0x46}, // ADC1 to Ain6 (Pr), ADC0 to Ain10 (Y),
         // {0xC4, 0xF5}, // ADC2 to Ain8 (Pb) and enables manual override of mux, SOG
         {0x69, 0x40}, // 1.0v sync
         {0xb3, 0x51}, // free run th
+        //{0xf4, 0x2a}, // drive strength
         {},
     };
 
@@ -192,15 +210,88 @@ namespace device
         sendSingleCommand(0x86, 0x0b);
     }
 
+    void ADV7181::stopSTDILineCountMode() const
+    {
+        sendSingleCommand(0x86, 0x09); // 一回 off
+    }
+
     void ADV7181::setLineLength(int l) const
     {
-        sendSingleCommand(0x8f, l >> 8);
+        sendSingleCommand(0x8f, 0x70 | (l >> 8)); // LLC_PAD_SEL
         sendSingleCommand(0x90, l);
     }
 
     void ADV7181::setRGBSyncModeCSync(bool f) const
     {
         sendSingleCommand(0x85, f ? 0x11 : 0x19);
+    }
+
+    bool ADV7181::isPLLLocked() const
+    {
+        return getStatus2() & 0x80;
+    }
+
+    bool ADV7181::isFreeRun() const
+    {
+        return getStatus2() & 0x40;
+    }
+
+    void ADV7181::setPLL(bool manual, bool immediate, int div, int hFreq) const
+    {
+        div *= 4;
+        // div *= 2;
+
+        int pixFreq = div * hFreq;
+        auto [vcoRangeCode, postDiv] = [&]() -> std::tuple<int, int>
+        {
+            if (pixFreq < 30000000)
+            {
+                return {0b00, 6};
+            }
+            else if (pixFreq < 45000000)
+            // else if (pixFreq < 60000000)
+            {
+                return {0b01, 4};
+            }
+            else if (pixFreq < 90000000)
+            {
+                return {0b10, 2};
+            }
+            return {0b11, 1};
+        }();
+
+        constexpr float SR = 11.0f;
+        // constexpr float SR = 8.0f;
+        float f1 = hFreq * (1 / 1000.0f * 3.14f * 2 / SR);
+        auto qpump = static_cast<int>(f1 * f1 * div * postDiv * (0.082f / 310));
+        auto qpumpCode = [&]
+        {
+            constexpr int thresQP[] = {75, 125, 200, 300, 425, 625, 1000};
+            int i = 0;
+            for (; i < 7; ++i)
+            {
+                if (qpump < thresQP[i])
+                {
+                    break;
+                }
+            }
+            return i;
+        }();
+
+        printf("div %d, h %d, vco %d, qpump %d:%d %fMHz\n", div, hFreq, vcoRangeCode, qpump, qpumpCode, pixFreq / 1000000.0f);
+
+        int ctrl1 = (manual ? 0x80 : 0) | 0b1100000 | (immediate ? 0 : 0x10) | (div >> 8);
+        int ctrl2 = div;
+        int ctrl4 = 0x80 | (vcoRangeCode << 5) | 0x10;
+        // defaultDiv = 0b1101011010 = 858;
+
+        // SOG SYNC LEVEl: 0x50 = 93.75mv
+        int tllcCtrl = 0x50 | qpumpCode;
+
+        sendSingleCommand(0x87, ctrl1);
+        sendSingleCommand(0x88, ctrl2);
+        sendSingleCommand(0x8a, ctrl4);
+        sendSingleCommand(0x3c, tllcCtrl);
     }
 
     void ADV7181::updateStatus()
@@ -279,6 +370,7 @@ namespace device
         enum class State
         {
             IDLE,
+            WAIT_DISABLE,
             WAIT_ENABLE,
             WAIT_STABLE1,
             WAIT_STABLE2,
@@ -305,14 +397,28 @@ namespace device
             {
                 // 28.63MHz/256 のカウンタでの周期の2.5倍 (Frame + margin 0.5)
                 wait = getSTDIState().nCyclesInField_256 * 1000 * 5 / (28636363 / 256 * 2);
-                // printf("wait = %d\n", wait);
+                // wait = getSTDIState().nCyclesInField_256 * 1000 * 10 / (28636363 / 256 * 2);
+                //  printf("wait = %d\n", wait);
             };
 
             switch (state)
             {
             case State::IDLE:
-                startSTDILineCountMode();
+                stopSTDILineCountMode();
                 next();
+                break;
+
+            case State::WAIT_DISABLE:
+                if (!isEnableSTDI())
+                {
+                    startSTDILineCountMode();
+                    wait = 80;
+                    next();
+                }
+                else if (timeOutTimeInMS < 0)
+                {
+                    return false;
+                }
                 break;
 
             case State::WAIT_ENABLE:
