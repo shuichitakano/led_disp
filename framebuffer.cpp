@@ -4,6 +4,7 @@
  */
 
 #include "framebuffer.h"
+
 #include <hardware/sync.h>
 #include <mutex>
 #include <assert.h>

@@ -23,6 +23,8 @@
 #include "image_proc.h"
 #include "bmp.h"
 #include "framebuffer.h"
+#include "textplane.h"
+#include "menu.h"
 #include "util.h"
 #include "video_stream_buffer.h"
 #include "video_stream.h"
@@ -610,7 +612,9 @@ struct LEDDriver
     uint32_t dataBuffer_[N_DATA_BUFFERS][N_RGB_CH][UNIT_DATA_BUFFER_SIZE + 2]; // 22.5KB
 
     graphics::FrameBuffer frameBuffer_;
+    graphics::TextPlane textPlane_;
     video::VideoCapture capture_;
+    ui::Menu menu_;
 
     int currentRefreshPerField_ = 0; // 1フィールドあたりのPWM更新回数
 
@@ -698,15 +702,24 @@ struct LEDDriver
         auto *dstG = dataBuffer_[dataBufferID][1];
         auto *dstB = dataBuffer_[dataBufferID][2];
 
+        int y1 = y + N_SCAN_LINES;
+        int y2 = y1 + N_SCAN_LINES;
+        int y3 = y2 + N_SCAN_LINES;
+
         int lineID0 = frameBuffer_.moveCurrentPlaneLine(y);
-        int lineID1 = frameBuffer_.moveCurrentPlaneLine(y + N_SCAN_LINES * 1);
-        int lineID2 = frameBuffer_.moveCurrentPlaneLine(y + N_SCAN_LINES * 2);
-        int lineID3 = frameBuffer_.moveCurrentPlaneLine(y + N_SCAN_LINES * 3);
+        int lineID1 = frameBuffer_.moveCurrentPlaneLine(y1);
+        int lineID2 = frameBuffer_.moveCurrentPlaneLine(y2);
+        int lineID3 = frameBuffer_.moveCurrentPlaneLine(y3);
 
         auto *line0 = frameBuffer_.getLineBuffer(lineID0);
         auto *line1 = frameBuffer_.getLineBuffer(lineID1);
         auto *line2 = frameBuffer_.getLineBuffer(lineID2);
         auto *line3 = frameBuffer_.getLineBuffer(lineID3);
+
+        textPlane_.composite(line0, y);
+        textPlane_.composite(line1, y1);
+        textPlane_.composite(line2, y2);
+        textPlane_.composite(line3, y3);
 
         // 先頭に ラインの繰り返し数
 #if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
@@ -813,6 +826,7 @@ struct LEDDriver
     void __not_in_flash_func(drawStatusLine)(int fps16, int ct)
     {
         auto s2 = adv7181_.getStatus2();
+#if 0
         char str[41];
         int nch = snprintf(str, sizeof(str),
                            "F%d L%d [%d:%d][%d:%d] %d %d.%dFPS",
@@ -832,10 +846,16 @@ struct LEDDriver
                 graphics::compositeFont(p, xofs, 320, i, str);
             }
         }
-        // if (!adv7181_.isPLLLocked() || adv7181_.isFreeRun())
-        // {
-        //     printf("%d %d\n", adv7181_.isFreeRun(), adv7181_.isPLLLocked());
-        // }
+#else
+        // textPlane_.fillBlack(4, 8, 12, 6);
+        textPlane_.setColor(2);
+        textPlane_.setShadowColor(0);
+        textPlane_.enableShadow(true);
+        textPlane_.enableTransBlack(false);
+
+        textPlane_.printf(40 - 8, 25, "%d.%dFPS",
+                          fps16 >> 4, ((fps16 & 15) * 10) >> 4);
+#endif
     }
 
     void __not_in_flash_func(captureDMAIRQHandler)(uint32_t time)
@@ -870,8 +890,30 @@ struct LEDDriver
         enableVideoCaptureIRQ(false);
     }
 
+    int currentInput_ = 0;
+
+    void createMenu()
+    {
+        static int tmp = 100;
+        static constexpr const char *inputTexts[] = {"VIDEO", "S VIDEO", "COMPONENT", "RGB"};
+        menu_.appendItem(&currentInput_, "INPUT", std::begin(inputTexts), std::end(inputTexts),
+                         "Select Input",
+                         {},
+                         [&]
+                         {
+                             printf("input %d\n", currentInput_);
+                         });
+        menu_.appendItem(&tmp, {256, 700}, "H SAMPLE", "Reset", {}, [&]
+                         { tmp = 585; });
+
+        menu_.appendItem("CLOSE MENU", {},
+                         [&]
+                         { menu_.close(); });
+    }
+
     void __not_in_flash_func(mainProc)()
     {
+        createMenu();
         setVideoCaptureIRQ();
 
         int yofs = 0;
@@ -879,15 +921,16 @@ struct LEDDriver
 
         int prevButtons = 0xf;
 
-        int cursorLine = 120;
-
         while (true)
         {
+            textPlane_.clear();
             //            printf("%d\n", yofs);
             if (!LED_PANEL_DRIVER_DEBUG)
             {
                 auto curButtons = pca9554_.input();
+                menu_.update(curButtons);
 
+#if 0
                 // printf("bt %d\n", curButtons);
                 if (device::isButtonEdge(curButtons, prevButtons, device::Button::CENTER))
                 {
@@ -896,29 +939,6 @@ struct LEDDriver
                     adv7181_.clearStatusCache();
                 }
 
-                // if (device::isButtonEdge(curButtons, prevButtons, device::Button::RIGHT))
-                // {
-                //     adv7181_.getSTDIState().dump();
-                //     adv7181_.getSSPDState().dump();
-                // }
-
-#if 0
-                if (device::isButtonEdge(curButtons, prevButtons, device::Button::UP))
-                {
-                    --cursorLine;
-                }
-                if (device::isButtonEdge(curButtons, prevButtons, device::Button::DOWN))
-                {
-                    ++cursorLine;
-                }
-                capture_.setCursorLine(cursorLine);
-
-                if (device::isButtonEdge(curButtons, prevButtons, device::Button::RIGHT))
-                {
-                    capture_.requestDumpLine(cursorLine);
-                }
-#endif
-#if 1
                 if (device::isButtonEdge(curButtons, prevButtons, device::Button::LEFT))
                 {
                     capture_.setHDiv(capture_.getHDiv() - 1, adv7181_);
@@ -989,7 +1009,9 @@ struct LEDDriver
             // drawStatusLine(fps16, cursorLine);
             // drawStatusLine(fps16, currentRefreshPerField_);
             drawStatusLine(fps16, capture_.getHDiv());
+            menu_.render(textPlane_);
 
+            textPlane_.flip();
             frameBuffer_.finishPlane();
             // printf("y=%d\n", yofs);
 
