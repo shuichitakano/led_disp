@@ -39,4 +39,9 @@ namespace device
         auto mask = 1 << static_cast<int>(b);
         return ((cur ^ prev) & ~cur) & mask;
     }
+
+    inline bool isAnyButtonPushed(int cur)
+    {
+        return (cur & 0b11111) != 0b11111;
+    }
 }

@@ -26,6 +26,8 @@ add_executable(led_disp
     video_stream_buffer.cpp
     image_proc.cpp
     framebuffer.cpp
+    textplane.cpp
+    menu.cpp
     adv7181.cpp
     pca9554.cpp
     rgb2serial.S
