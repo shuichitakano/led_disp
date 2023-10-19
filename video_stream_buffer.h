@@ -15,8 +15,8 @@ namespace video
     {
     public:
         static constexpr uint32_t UNIT_BUFFER_SIZE = 512; // 1024pix
-        static constexpr uint32_t WRITE_RING_SIZE = 8;    // 2のベキ
-        static constexpr uint32_t N_BUFFERS = 8;
+        static constexpr uint32_t WRITE_RING_SIZE = 32;   // 2のベキ
+        static constexpr uint32_t N_BUFFERS = 18;
         static constexpr uint32_t TOTAL_BUFFER_SIZE = UNIT_BUFFER_SIZE * N_BUFFERS;
 
         static_assert(N_BUFFERS <= WRITE_RING_SIZE);
@@ -83,6 +83,8 @@ namespace video
         {
             return writeIdx0_ != writeIdx1_;
         }
+
+        int getFreeBufferSize() const { return nFreeBuffers_; }
 
     private:
         RawBuffer buffer_;

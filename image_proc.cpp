@@ -381,7 +381,8 @@ namespace graphics
 
             void __not_in_flash_func(setup)(size_t nDstPixels,
                                             size_t nSrcPixels,
-                                            size_t srcOfs)
+                                            size_t srcOfs,
+                                            size_t phase_x256)
             {
                 c0 = interp_default_config();
                 interp_config_set_add_raw(&c0, true);
@@ -392,7 +393,7 @@ namespace graphics
 
                 // y の立場では 2 byte/pix で 16bit 固定少数
                 step = (nSrcPixels << 17) / nDstPixels;
-                accum0 = (srcOfs << 17) + (step >> 1);
+                accum0 = (srcOfs << 17) + (step >> 1) + (phase_x256 << 9);
             }
 
             void __not_in_flash_func(apply)(const uint32_t *src) // const (interp_set_configが...)
@@ -413,9 +414,10 @@ namespace graphics
 
     void __not_in_flash_func(setupResizeYCbCr420Config)(size_t nDstPixels,
                                                         size_t nSrcPixels,
-                                                        size_t srcOfs)
+                                                        size_t srcOfs,
+                                                        size_t phase_x256)
     {
-        resizeInterpConfig_.setup(nDstPixels, nSrcPixels, srcOfs);
+        resizeInterpConfig_.setup(nDstPixels, nSrcPixels, srcOfs, phase_x256);
     }
 
     void __not_in_flash_func(resizeYCbCr420PreConfig)(uint32_t *dst, size_t nDstPixels,

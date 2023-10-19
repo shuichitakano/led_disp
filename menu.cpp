@@ -10,7 +10,7 @@
 namespace ui
 {
 
-    void
+    Menu::Item &
     Menu::appendItem(int *value,
                      const char *modeText,
                      const char *const *valuesBegin, const char *const *valuesEnd,
@@ -28,9 +28,10 @@ namespace ui
         item.valueUpdateFunc = std::move(valueUpdateFunc);
         item.buttonFunc = std::move(buttonFunc);
         items_.push_back(std::move(item));
+        return items_.back();
     }
 
-    void
+    Menu::Item &
     Menu::appendItem(int *value, const std::array<int, 2> &range,
                      const char *modeText,
                      const char *buttonText,
@@ -45,6 +46,7 @@ namespace ui
         item.valueUpdateFunc = std::move(valueUpdateFunc);
         item.buttonFunc = std::move(buttonFunc);
         items_.push_back(std::move(item));
+        return items_.back();
     }
 
     void
@@ -60,24 +62,29 @@ namespace ui
     void
     Menu::update(int buttons)
     {
+        auto pb = prevButtons_;
+        prevButtons_ = buttons;
+
         if (!isOpened())
         {
-            if (!device::isAnyButtonPushed(prevButtons_) && device::isAnyButtonPushed(buttons))
+            if (!device::isAnyButtonPushed(pb) && device::isAnyButtonPushed(buttons))
             {
                 open();
             }
-            else
-            {
-                prevButtons_ = buttons;
-                return;
-            }
+            return;
         }
 
         ++frameCounter_;
 
         const auto &item = items_[currentItem_];
 
-        if (device::isButtonEdge(buttons, prevButtons_, device::Button::UP))
+        bool insensitive = false;
+        if (item.insensitiveFunc)
+        {
+            insensitive = item.insensitiveFunc();
+        }
+
+        if (device::isButtonEdge(buttons, pb, device::Button::UP))
         {
             --currentItem_;
             if (currentItem_ < 0)
@@ -86,7 +93,7 @@ namespace ui
             }
             frameCounter_ = 0;
         }
-        else if (device::isButtonEdge(buttons, prevButtons_, device::Button::DOWN))
+        else if (device::isButtonEdge(buttons, pb, device::Button::DOWN))
         {
             ++currentItem_;
             if (currentItem_ >= static_cast<int>(items_.size()))
@@ -95,59 +102,61 @@ namespace ui
             }
             frameCounter_ = 0;
         }
-        else if (device::isButtonEdge(buttons, prevButtons_, device::Button::CENTER))
+        else if (!insensitive)
         {
-            if (item.buttonFunc)
+            if (device::isButtonEdge(buttons, pb, device::Button::CENTER))
             {
-                item.buttonFunc();
+                if (item.buttonFunc)
+                {
+                    item.buttonFunc();
+                }
+                frameCounter_ = 0;
             }
-            frameCounter_ = 0;
-        }
-        else if (device::isButtonEdge(buttons, prevButtons_, device::Button::LEFT))
-        {
-            if (item.value)
+            else if (device::isButtonEdge(buttons, pb, device::Button::LEFT))
             {
-                if (*item.value > item.range[0])
+                if (item.value)
                 {
-                    --*item.value;
+                    if (*item.value > item.range[0])
+                    {
+                        --*item.value;
+                    }
+                    else if (item.loop)
+                    {
+                        *item.value = item.range[1];
+                    }
                 }
-                else if (item.loop)
+                if (item.valueUpdateFunc)
                 {
-                    *item.value = item.range[1];
+                    item.valueUpdateFunc();
                 }
+                frameCounter_ = 0;
             }
-            if (item.valueUpdateFunc)
+            else if (device::isButtonEdge(buttons, pb, device::Button::RIGHT))
             {
-                item.valueUpdateFunc();
-            }
-            frameCounter_ = 0;
-        }
-        else if (device::isButtonEdge(buttons, prevButtons_, device::Button::RIGHT))
-        {
-            if (item.value)
-            {
-                if (*item.value < item.range[1])
+                if (item.value)
                 {
-                    ++*item.value;
+                    if (*item.value < item.range[1])
+                    {
+                        ++*item.value;
+                    }
+                    else if (item.loop)
+                    {
+                        *item.value = item.range[0];
+                    }
                 }
-                else if (item.loop)
-                {
-                    *item.value = item.range[0];
-                }
-            }
 
-            if (item.valueUpdateFunc)
-            {
-                item.valueUpdateFunc();
+                if (item.valueUpdateFunc)
+                {
+                    item.valueUpdateFunc();
+                }
+                frameCounter_ = 0;
             }
-            frameCounter_ = 0;
         }
-        else if (frameCounter_ > 300)
+
+        if (frameCounter_ > 300)
         {
             close();
         }
-
-        prevButtons_ = buttons;
     }
 
     void
@@ -161,6 +170,11 @@ namespace ui
     Menu::close()
     {
         currentItem_ = -1;
+
+        if (closeFunc_)
+        {
+            closeFunc_();
+        }
     }
 
     void
@@ -173,7 +187,6 @@ namespace ui
 
         textPlane.enableShadow(true);
         textPlane.enableTransBlack(true);
-        textPlane.setColor(7);
         textPlane.setShadowColor(0);
 
         constexpr char LEFT = 1;
@@ -191,10 +204,18 @@ namespace ui
 
         bool blink = (frameCounter_ >> 4) & 1;
         const auto &item = items_[currentItem_];
+
+        bool insensitive = false;
+        if (item.insensitiveFunc)
+        {
+            insensitive = item.insensitiveFunc();
+        }
+
+        textPlane.setColor(insensitive ? 1 : 7);
         if (item.value)
         {
-            const auto bl = blink ? ' ' : LEFT;
-            const auto br = blink ? ' ' : RIGHT;
+            const auto bl = blink || insensitive ? ' ' : LEFT;
+            const auto br = blink || insensitive ? ' ' : RIGHT;
 
             if (item.valueTexts)
             {
@@ -224,7 +245,7 @@ namespace ui
             textPlane.printf(x + 6, y + 2, "%c", DOWN);
         }
 
-        if (item.buttonText)
+        if (item.buttonText && !insensitive)
         {
             textPlane.setColor(6);
             textPlane.printf(x + 11, y + 2, "%c %s", blink ? ' ' : BUTTON, item.buttonText);

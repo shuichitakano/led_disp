@@ -17,6 +17,8 @@ project(led_disp C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+add_compile_options(-fno-strict-aliasing)
+
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(led_disp 
@@ -30,6 +32,8 @@ add_executable(led_disp
     menu.cpp
     adv7181.cpp
     pca9554.cpp
+    tpa2016.cpp
+    nv_settings.cpp
     rgb2serial.S
     ycbcr2rgb.S
 )
@@ -51,6 +55,7 @@ target_link_libraries(led_disp
     hardware_pio
     hardware_interp
     hardware_i2c
+    hardware_flash
 )
 
 pico_add_extra_outputs(led_disp)

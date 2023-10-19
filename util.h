@@ -8,6 +8,16 @@
 #include <vector>
 #include <hardware/structs/systick.h>
 
+#ifdef NDEBUG
+// #if 0
+#define DBGPRINT(...) \
+    do                \
+    {                 \
+    } while (0)
+#else
+#define DBGPRINT(...) printf(__VA_ARGS__)
+#endif
+
 namespace util
 {
     template <class T>

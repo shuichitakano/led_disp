@@ -85,6 +85,22 @@ namespace graphics
         return i < 0 ? nullptr : getLineBuffer(i);
     }
 
+    std::tuple<uint16_t *, bool>
+    FrameBuffer::peekCurrentPlaneLineUnsafe(int y)
+    {
+        std::lock_guard lock(planeLock_);
+        auto &plane = getReadPlane();
+        if (y < plane.size())
+        {
+            int idx = plane[y];
+            return {idx >= 0 ? getLineBuffer(idx) : nullptr, true};
+        }
+        else
+        {
+            return {nullptr, false};
+        }
+    }
+
     // 指定ラインを取り出し
     int
     FrameBuffer::moveCurrentPlaneLine(int y)
@@ -101,6 +117,23 @@ namespace graphics
                     // printf("move %d\n", y);
                     assert(r >= 0);
                     return r;
+                }
+            }
+            __wfe();
+        }
+    }
+
+    void
+    FrameBuffer::waitForCurrentPlaneLineReady(int y)
+    {
+        while (1)
+        {
+            {
+                std::lock_guard lock(planeLock_);
+                auto &plane = getReadPlane();
+                if (y < plane.size())
+                {
+                    return;
                 }
             }
             __wfe();
@@ -138,6 +171,12 @@ namespace graphics
                 }
             }
             plane.clear();
+
+            if (dumpReq_)
+            {
+                dumpState();
+                dumpReq_ = false;
+            }
         }
         __sev();
 
@@ -146,5 +185,28 @@ namespace graphics
             readPlaneID_ = 0;
         }
         // printf("flipReadPlane: w%d, r%d\n", writePlaneID_, readPlaneID_);
+    }
+
+    void
+    FrameBuffer::dumpState() const
+    {
+        printf("FrameBuffer: %d x %d %dlines, free %d\n", width_, height_, nLines_, freeLines_.size());
+        printf("  read plane: %d, write plane; %d\n", readPlaneID_, writePlaneID_);
+        int n = 0;
+        int i = 0;
+        for (auto &pl : planes_)
+        {
+            printf(" plane %d:\n", i);
+            int j = 0;
+            for (auto v : pl)
+            {
+                printf("   %d: %d\n", j, v);
+                ++j;
+                if (v >= 0)
+                    ++n;
+            }
+            ++i;
+        }
+        printf(" %d used, total %d\n", n, n + freeLines_.size());
     }
 }

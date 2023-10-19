@@ -6,7 +6,7 @@
 
 namespace device
 {
-    enum class SignalInput
+    enum class SignalInput : uint8_t
     {
         NONE,
         COMPOSITE,

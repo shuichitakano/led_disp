@@ -12,6 +12,11 @@
 #include "video_stream_buffer.h"
 #include "adv7181.h"
 
+namespace ui
+{
+    class Menu;
+}
+
 namespace video
 {
     class VideoCapture
@@ -23,7 +28,11 @@ namespace video
             int preVSyncLines = 0;
             int activeLines = 0;
             int activeLines2 = 0;
+            int activeLines3 = 0;
             int postVSyncLines = 0;
+            int postVSyncLines2 = 0;
+
+            int getTotalActiveLines() const { return activeLines + activeLines2 + activeLines3; }
         };
 
         bool signalDetected_ = false;
@@ -32,6 +41,8 @@ namespace video
         int hBlankSizeInBytes_ = 0;
         std::array<FieldInfo, 2> fieldInfo_;
         uint32_t vSyncIntervalCycles_ = 0;
+
+        bool isFreeRun_ = false;
 
         uint32_t lineIntervalCycles128_ = 0;
         uint32_t frameIntervalCycles_ = 0;
@@ -76,20 +87,22 @@ namespace video
         bool logReq_ = false;
 
         static inline constexpr int DEFAULT_HDIV = 858;
-        int hdiv_ = DEFAULT_HDIV;
+        int hdiv_ = DEFAULT_HDIV;  // PLL サンプル数
+        int resampleWidth_ = 640;  // 画面幅にリサンプルする範囲
+        int resampleOfs_ = 40;     // リサンプルする時のサンプルオフセット
+        int resamplePhaseOfs_ = 0; // 理サンプル時のサブオフセット
+        int vOfs_ = 0;             // V方向オフセット
 
+        device::ADV7181 *adv7181_{};
         device::ADV7181::STDIState currentSTDIState_{};
 
     public:
-        bool __not_in_flash_func(tick)(graphics::FrameBuffer &frameBuffer,
-                                       device::ADV7181 &adv7181);
-        void __not_in_flash_func(captureFrame)(graphics::FrameBuffer &frameBuffer);
-        void __not_in_flash_func(captureFrame2)(graphics::FrameBuffer &frameBuffer);
+        void setADV7181(device::ADV7181 *p) { adv7181_ = p; }
 
-        void resetSignalDetection()
-        {
-            signalDetected_ = false;
-        }
+        bool __not_in_flash_func(tick)(graphics::FrameBuffer &frameBuffer);
+        void __not_in_flash_func(captureFrame)(graphics::FrameBuffer &frameBuffer);
+
+        void resetSignalDetection();
 
         bool __not_in_flash_func(analyzeSignal)();
         void __not_in_flash_func(measureInterval)();
@@ -104,7 +117,7 @@ namespace video
 
         void setCursorLine(int i) { cursorLine_ = i; }
         int getHDiv() const { return hdiv_; }
-        void setHDiv(int v, device::ADV7181 &adv7181);
+        void setHDiv(int v);
 
         uint32_t getFieldIntervalCycles() const { return frameIntervalCycles_ >> 1; }
 
@@ -113,12 +126,15 @@ namespace video
         int getTopBound() const { return topBound_; }
         int getBottomBound() const { return bottomBound_; }
 
+        void initMenu(ui::Menu &menu);
+        void onMenuClose();
+
     private:
         void __not_in_flash_func(startCaptureLine)(BT656TimingCode sav, uint32_t time);
         void startBGCapture();
         void stopBGCapture();
 
-        void updateBound(const uint32_t *data, int line);
+        void __not_in_flash_func(updateBound)(const uint32_t *data, int line);
     };
 
 }
