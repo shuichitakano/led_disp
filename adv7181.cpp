@@ -62,8 +62,8 @@ namespace
         {0x86, 0x0B}, // Enable stdi_line_count_mode
         {0x8F, 0x77}, // FR_LL to 1820 & Enable 28.63MHz LLC
         {0x90, 0x1C}, // FR_LL to 1820
-        // {0xBF, 0x06}, // Blue Screen Free Run Colour
-        {0xBF, 0x00}, // Blue Screen Free Run Colour
+        {0xBF, 0x06}, // Blue Screen Free Run Colour
+        //{0xBF, 0x00}, // Blue Screen Free Run Colour
         {0xC0, 0x40}, // default color
         {0xC1, 0xF0}, // default color
         {0xC2, 0x80}, // Default color
@@ -71,23 +71,11 @@ namespace
         {0xC9, 0x0C}, // Enable DDR Mode
         //{0xF3, 0x07}, // Enable Anti Alias Filter on ADC 0,1,2
         {0xF3, 0x00}, // Disable Anti Alias Filter
-#if 1
         {0x0E, 0x80}, // ADI Recommended Setting
         {0x52, 0x46}, // ADI Recommended Setting
         {0x54, 0x80}, // ADI Recommended Setting
         {0xF6, 0x3B}, // ADI Recommended Setting
         {0x0E, 0x00}, // ADI Recommended Setting
-#else
-        {0x05, 0x01}, // Comp
-        {0x06, 0x00}, // 525i
-        {0x3C, 0x53}, // PLL_QPUMP to 011b
-        {0xB7, 0x1B}, // ADI Recommended
-        {0x0E, 0x80}, // ADI recommended sequence
-        {0x52, 0x46}, // ADI recommended sequence
-        {0x54, 0x80}, // ADI Recommended Setting
-        {0xF6, 0x3B}, // ADI Recommended Setting
-        {0x0E, 0x00}, // ADI recommended sequence
-#endif
         {0xC3, 0x56}, // ADC1 to Ain8 (Pr), ADC0 to Ain10 (Y),
         {0xC4, 0xF4}, // ADC2 to Ain6 (Pb) and enables manual override of mux, SOG
         // {0xC3, 0x46}, // ADC1 to Ain6 (Pr), ADC0 to Ain10 (Y),
@@ -127,6 +115,92 @@ namespace
         {},
     };
 
+    // ##SD CVBS##
+    // :AUTODETECT CVBS IN NTSC/PAL/SECAM, 8-Bit 422 encoder:
+    static constexpr std::array<uint8_t, 2> i2cDataCVBS_[] = {
+        {0x00, 0x0B}, // CVBS input on AIN1
+        {0x03, 0x0C}, // 8 Bit Mode
+        {0x04, 0x77}, // Enable SFL
+        {0x17, 0x41}, // select SH1
+        {0x1D, 0x47}, // Enable 28MHz Crystal
+        {0x31, 0x02}, // Clears NEWAV_MODE, SAV/EAV  to suit ADV video encoders
+        {0x3A, 0x17}, // Set Latch Clock & power down ADC 1 & ADC2 & ADC3
+        {0x3B, 0x81}, // Enable internal Bias
+        {0x3D, 0xA2}, // MWE Enable Manual Window, Colour Kill Threshold to 2
+        {0x3E, 0x6A}, // BLM optimisation
+        {0x3F, 0xA0}, // BGB
+        {0x86, 0x0B}, // Enable stdi_line_count_mode
+        {0xF3, 0x01}, // Enable Anti Alias Filter on ADC0
+        {0xF9, 0x03}, // Set max v lock range
+        {0x0E, 0x80}, // ADI Recommended Setting
+        {0x52, 0x46}, // ADI Recommended Setting
+        {0x54, 0x80}, // ADI Recommended Setting
+        {0x7F, 0xFF}, // ADI Recommended Setting
+        {0x81, 0x30}, // ADI Recommended Setting
+        {0x90, 0xC9}, // ADI Recommended Setting
+        {0x91, 0x40}, // ADI Recommended Setting
+        {0x92, 0x3C}, // ADI Recommended Setting
+        {0x93, 0xCA}, // ADI Recommended Setting
+        {0x94, 0xD5}, // ADI Recommended Setting
+        {0xB1, 0xFF}, // ADI Recommended Setting
+        {0xB6, 0x08}, // ADI Recommended Setting
+        {0xC0, 0x9A}, // ADI Recommended Setting
+        {0xCF, 0x50}, // ADI Recommended Setting
+        {0xD0, 0x4E}, // ADI Recommended Setting
+        {0xD1, 0xB9}, // ADI Recommended Setting
+        {0xD6, 0xDD}, // ADI Recommended Setting
+        {0xD7, 0xE2}, // ADI Recommended Setting
+        {0xE5, 0x51}, // ADI Recommended Setting
+        {0xF6, 0x3B}, // ADI Recommended Setting
+        {0x0E, 0x00}, // ADI Recommended Setting
+        // {0xC3, 0x09}, // ADC0 to Ain1
+        // {0xBF, 0x00}, // Blue Screen Free Run Colour
+        // {0xb3, 0x51}, // free run th
+        {},
+    };
+
+    // ##SDP Y/C##
+    //: AUTODETECT Y/C IN NTSC/PAL/SECAM, 8 Bit 422 Encoder:
+    static constexpr std::array<uint8_t, 2> i2cDataYC_[] = {
+        {0x03, 0x0C}, // 8 Bit Mode
+        {0x04, 0x57}, // Enable SFL
+        {0x1D, 0x47}, // Enable 28MHz Crystal
+        {0x31, 0x02}, // Clears NEWAV_MODE, SAV/EAV  to suit ADV video encoders
+        {0x3A, 0x13}, // Set Latch Clock & turn off ADC2 & ADC3
+        {0x3B, 0x81}, // Enable Internal Bias
+        {0x3D, 0xA2}, // MWE Enable Manual Window, Colour Kill Threshold to 2
+        {0x3E, 0x6A}, // BLM optimisation
+        {0x3F, 0xA0}, // BGB
+        {0x86, 0x0B}, // Enable stdi_line_count_mode
+        {0x69, 0x03}, // Sets SDM_SEL to 03 for YC/CVBS Auto
+        {0xF3, 0x03}, // Enable Anti Alias Filters on ADC0 & ADC1
+        {0xF9, 0x03}, // Set max v lock range
+        {0xC4, 0x80}, // Enable maual input muxing
+        {0xC3, 0xED}, // ADC1 to Ain9 (C) and ADC0 to Ain7 (Y)
+        {0x0E, 0x80}, // ADI Recommended Setting
+        {0x52, 0x46}, // ADI Recommended Setting
+        {0x54, 0x80}, // ADI Recommended Setting
+        {0x7F, 0xFF}, // ADI Recommended Setting
+        {0x81, 0x30}, // ADI Recommended Setting
+        {0x90, 0xC9}, // ADI Recommended Setting
+        {0x91, 0x40}, // ADI Recommended Setting
+        {0x92, 0x3C}, // ADI Recommended Setting
+        {0x93, 0xCA}, // ADI Recommended Setting
+        {0x94, 0xD5}, // ADI Recommended Setting
+        {0xB1, 0xFF}, // ADI Recommended Setting
+        {0xB6, 0x08}, // ADI Recommended Setting
+        {0xC0, 0x9A}, // ADI Recommended Setting
+        {0xCF, 0x50}, // ADI Recommended Setting
+        {0xD0, 0x4E}, // ADI Recommended Setting
+        {0xD1, 0xB9}, // ADI Recommended Setting
+        {0xD6, 0xDD}, // ADI Recommended Setting
+        {0xD7, 0xE2}, // ADI Recommended Setting
+        {0xE5, 0x51}, // ADI Recommended Setting
+        {0xF6, 0x3B}, // ADI Recommended Setting
+        {0x0E, 0x00}, // ADI Recommended Setting
+        {},
+    };
+
     static constexpr int I2CADDR_CTRL = 0x42 >> 1;
     static constexpr int I2CADDR_VBI = 0x23 >> 1;
 }
@@ -161,10 +235,20 @@ namespace device
         {
             switch (input)
             {
+            case SignalInput::COMPOSITE:
+                printf("Composite\n");
+                return i2cDataCVBS_;
+
+            case SignalInput::S_VIDEO:
+                printf("S Video\n");
+                return i2cDataYC_;
+
             case SignalInput::COMPONENT:
+                printf("Component\n");
                 return i2cDataComponentCP_;
 
             case SignalInput::RGB21:
+                printf("RGB\n");
                 return i2cDataRGB_CP_;
             };
             return {};
@@ -181,7 +265,7 @@ namespace device
             while (true)
             {
                 auto data = *i2cData++;
-                if (!data[0])
+                if (!data[0] && !data[1]) // register 0 あるから危うい
                 {
                     break;
                 }
@@ -226,14 +310,24 @@ namespace device
         sendSingleCommand(0x85, f ? 0x11 : 0x19);
     }
 
-    bool ADV7181::isPLLLocked() const
+    bool ADV7181::isPLLLockedCP() const
     {
         return getStatus2() & 0x80;
     }
 
-    bool ADV7181::isFreeRun() const
+    bool ADV7181::isPLLLockedSDP() const
+    {
+        return getStatus3() & 1;
+    }
+
+    bool ADV7181::isFreeRunCP() const
     {
         return getStatus2() & 0x40;
+    }
+
+    bool ADV7181::isFreeRunSDP() const
+    {
+        return getStatus3() & 0x10;
     }
 
     void ADV7181::setPLL(bool manual, bool immediate, int div, int hFreq) const
@@ -475,7 +569,7 @@ namespace device
         auto check = [](int va, int vb, int m)
         {
             auto d = va - vb;
-            return d > -m && d < m;
+            return d >= -m && d <= m;
         };
 
         return (a.enabled == b.enabled &&
@@ -484,5 +578,15 @@ namespace device
                 a.nLinesInField == b.nLinesInField &&
                 check(a.nCyclesInField_256, b.nCyclesInField_256, a.nLinesInField * cycleMarginPerLine / 256) &&
                 check(a.blockSize, b.blockSize, cycleMarginPerLine * 8));
+    }
+
+    bool operator==(const ADV7181::STDIState &a, const ADV7181::STDIState &b)
+    {
+        return (a.enabled == b.enabled &&
+                a.interlaced == b.interlaced &&
+                a.nLinesInVSync == b.nLinesInVSync &&
+                a.nLinesInField == b.nLinesInField &&
+                a.nCyclesInField_256 == b.nCyclesInField_256 &&
+                a.blockSize == b.blockSize);
     }
 }

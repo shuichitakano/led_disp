@@ -10,6 +10,7 @@
 #include <hardware/vreg.h>
 #include <hardware/divider.h>
 #include <hardware/i2c.h>
+#include "hardware/watchdog.h"
 #include <vector>
 #include <tuple>
 #include <array>
@@ -31,6 +32,8 @@
 #include "video_capture.h"
 #include "adv7181.h"
 #include "pca9554.h"
+#include "tpa2016.h"
+#include "nv_settings.h"
 #include "app.h"
 
 namespace
@@ -45,9 +48,45 @@ static constexpr bool ENABLE_VIDEO_BOARD = !LED_PANEL_DRIVER_DEBUG;
 #define LED_PANEL_DRIVER_TYPE_SHIFT_ONLY 0
 #define LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH 1
 
-// #define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_ONLY
-#define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
+// #define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_ONLY // V1
+#define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH // V2
+#define BOARD_VER 3
 
+#if BOARD_VER == 3
+
+// LED data
+static constexpr uint32_t PIN_R1 = 10;
+static constexpr uint32_t PIN_R2 = 11;
+static constexpr uint32_t PIN_G1 = 12;
+static constexpr uint32_t PIN_G2 = 13;
+static constexpr uint32_t PIN_B1 = 14;
+static constexpr uint32_t PIN_B2 = 15;
+static constexpr uint32_t PIN_RGB_TOP = PIN_R1;
+
+// row select
+static constexpr uint32_t PIN_A = 20;
+static constexpr uint32_t PIN_B = 21;
+static constexpr uint32_t PIN_C = 22;
+
+// control
+static constexpr uint32_t PIN_LATCH = 16;
+static constexpr uint32_t PIN_FFCLK = 17;
+static constexpr uint32_t PIN_CLK = 18;
+static constexpr uint32_t PIN_LAT = 19;
+static constexpr uint32_t PIN_OE = 28;
+
+// BT656
+static constexpr uint32_t PIN_VD0 = 1;
+static constexpr uint32_t PIN_VD1 = 2;
+static constexpr uint32_t PIN_VD2 = 3;
+static constexpr uint32_t PIN_VD3 = 4;
+static constexpr uint32_t PIN_VD4 = 5;
+static constexpr uint32_t PIN_VD5 = 6;
+static constexpr uint32_t PIN_VD6 = 7;
+static constexpr uint32_t PIN_VD7 = 8;
+static constexpr uint32_t PIN_VCLK = 9;
+
+#else
 // LED data
 static constexpr uint32_t PIN_R1 = 8;
 static constexpr uint32_t PIN_R2 = 9;
@@ -85,19 +124,12 @@ static constexpr uint32_t PIN_VD6 = 20;
 static constexpr uint32_t PIN_VD7 = 21;
 static constexpr uint32_t PIN_VCLK = 22;
 
+#endif
+
 // I2C
 static constexpr uint32_t PIN_SDA = 26;
 static constexpr uint32_t PIN_SCL = 27;
 auto *i2cIF = i2c1;
-
-#if 0
-#define SLEEP sleep_us(0)
-#else
-#define SLEEP \
-    do        \
-    {         \
-    } while (0)
-#endif
 
 auto *pioDataCmd_ = pio0;
 auto *pioPWM_ = pio1;
@@ -589,6 +621,29 @@ namespace
 
     device::ADV7181 adv7181_;
     device::PCA9554 pca9554_;
+    device::TPA2016 tpa2016_;
+
+    struct SpeakerSettings
+    {
+        // 保存したいよな
+        int gainDB = -28;
+        int limiterLevelDBx2 = static_cast<int>(6.5 * 2);
+        int enableLimiter = true;
+        int noiseGateThreshold = 1; // 4mv
+        int enableNoiseGate = true;
+        int maxGainDB = 30;
+        int compressionRatioLog2 = 2; // 4:1
+
+        void apply(device::TPA2016 &d) const
+        {
+            d.setControl(true, true, false, enableNoiseGate);
+            d.setGain(gainDB);
+            d.setAGCControl1(enableLimiter, limiterLevelDBx2, noiseGateThreshold);
+            d.setAGCControl2(maxGainDB, compressionRatioLog2);
+        }
+    };
+
+    SpeakerSettings speakerSettings_;
 }
 
 struct LEDDriver
@@ -615,6 +670,16 @@ struct LEDDriver
     graphics::TextPlane textPlane_;
     video::VideoCapture capture_;
     ui::Menu menu_;
+
+    int currentInput_ = 0;
+
+    enum class InfoMode
+    {
+        NONE,
+        FPS_ONLY,
+        ALL,
+    };
+    int infoMode_ = static_cast<int>(InfoMode::FPS_ONLY);
 
     int currentRefreshPerField_ = 0; // 1フィールドあたりのPWM更新回数
 
@@ -670,6 +735,7 @@ struct LEDDriver
 
     void __not_in_flash_func(waitForScanStall)()
     {
+        resetPIOTxStalled(pioPWM_, SM_PWM);
         while (!isLEDPWMStalled())
         {
             tight_loop_contents();
@@ -696,8 +762,59 @@ struct LEDDriver
         }
     }
 
-    void __not_in_flash_func(updateDataBuffer)(int dataBufferID, int y)
+    int textLayerCompositeLine_ = 0;
+
+    void __not_in_flash_func(compositeTextLayer)()
     {
+        int y0 = textLayerCompositeLine_;
+        if (y0 >= N_SCAN_LINES)
+        {
+            return;
+        }
+        int y1 = y0 + N_SCAN_LINES;
+        int y2 = y1 + N_SCAN_LINES;
+        int y3 = y2 + N_SCAN_LINES;
+
+        auto [p0, p0e] = frameBuffer_.peekCurrentPlaneLineUnsafe(y0);
+        auto [p1, p1e] = frameBuffer_.peekCurrentPlaneLineUnsafe(y1);
+        auto [p2, p2e] = frameBuffer_.peekCurrentPlaneLineUnsafe(y2);
+        auto [p3, p3e] = frameBuffer_.peekCurrentPlaneLineUnsafe(y3);
+        if (!(p0e & p1e & p2e & p3e))
+        {
+            return;
+        }
+        if (!p0 || !p1 || !p2 || !p3)
+        {
+            ++textLayerCompositeLine_;
+            return;
+        }
+
+        textPlane_.setupComposite();
+        textPlane_.composite(p0, y0);
+        textPlane_.composite(p1, y1);
+        textPlane_.composite(p2, y2);
+        textPlane_.composite(p3, y3);
+        ++textLayerCompositeLine_;
+    }
+
+    void __not_in_flash_func(waitForUpdateReady)(int y)
+    {
+        frameBuffer_.waitForCurrentPlaneLineReady(y + N_SCAN_LINES * 3);
+    }
+
+    struct
+    {
+        uint32_t t0;
+        uint32_t t1;
+        uint32_t t2;
+        uint32_t t3;
+        uint32_t t4;
+    } updateDataBuffertTiming_;
+
+    void __not_in_flash_func(updateDataBuffer)(int dataBufferID, int y, bool textComp)
+    {
+        updateDataBuffertTiming_.t0 = util::getSysTickCounter24();
+
         auto *dstR = dataBuffer_[dataBufferID][0];
         auto *dstG = dataBuffer_[dataBufferID][1];
         auto *dstB = dataBuffer_[dataBufferID][2];
@@ -711,15 +828,23 @@ struct LEDDriver
         int lineID2 = frameBuffer_.moveCurrentPlaneLine(y2);
         int lineID3 = frameBuffer_.moveCurrentPlaneLine(y3);
 
+        updateDataBuffertTiming_.t1 = util::getSysTickCounter24();
+
         auto *line0 = frameBuffer_.getLineBuffer(lineID0);
         auto *line1 = frameBuffer_.getLineBuffer(lineID1);
         auto *line2 = frameBuffer_.getLineBuffer(lineID2);
         auto *line3 = frameBuffer_.getLineBuffer(lineID3);
 
-        textPlane_.composite(line0, y);
-        textPlane_.composite(line1, y1);
-        textPlane_.composite(line2, y2);
-        textPlane_.composite(line3, y3);
+        if (textComp)
+        {
+            textPlane_.setupComposite();
+            textPlane_.composite(line0, y);
+            textPlane_.composite(line1, y1);
+            textPlane_.composite(line2, y2);
+            textPlane_.composite(line3, y3);
+            textLayerCompositeLine_ = y + 1;
+        }
+        updateDataBuffertTiming_.t2 = util::getSysTickCounter24();
 
         // 先頭に ラインの繰り返し数
 #if LED_PANEL_DRIVER_TYPE == LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH
@@ -730,18 +855,85 @@ struct LEDDriver
         dstR[0] = loop;
         dstG[0] = loop;
         dstB[0] = loop;
-
         graphics::convert4(dstR + 1, dstG + 1, dstB + 1, line0, line1, line2, line3);
 
+        updateDataBuffertTiming_.t3 = util::getSysTickCounter24();
+
         frameBuffer_.freeLine({lineID0, lineID1, lineID2, lineID3});
+
+        updateDataBuffertTiming_.t4 = util::getSysTickCounter24();
+    }
+
+    ///
+    int nextTransferLine_ = 0;
+
+    constexpr int getTransferLineDBID() const
+    {
+        return nextTransferLine_ & 1;
+    }
+
+    void __not_in_flash_func(startTransferFrame)()
+    {
+        dataTransferComplete_ = false;
+        nextTransferLine_ = 0;
+
+#if 0
+        waitForUpdateReady(0);
+        updateDataBuffer(getTransferLineDBID(), nextTransferLine_, true);
+        transferAndUpdateNextLine();
+#else
+        updateDataBuffer(0, 0, true);
+        updateDataBuffer(1, 1, true);
+
+        int dbid = getTransferLineDBID();
+        transferData({dataBuffer_[dbid][0],
+                      dataBuffer_[dbid][1],
+                      dataBuffer_[dbid][2]},
+                     UNIT_DATA_BUFFER_SIZE + 1); // DMA開始
+
+        ++nextTransferLine_;
+#endif
+    }
+
+    void __not_in_flash_func(transferAndUpdateNextLine)()
+    {
+        if (nextTransferLine_ >= N_SCAN_LINES)
+        {
+            dataTransferComplete_ = true;
+            return;
+        }
+
+        int dbid = getTransferLineDBID();
+        transferData({dataBuffer_[dbid][0],
+                      dataBuffer_[dbid][1],
+                      dataBuffer_[dbid][2]},
+                     UNIT_DATA_BUFFER_SIZE + 1); // DMA開始
+
+        if (++nextTransferLine_ < N_SCAN_LINES)
+        {
+            // setup next line
+            updateDataBuffer(getTransferLineDBID(), nextTransferLine_, false);
+        }
     }
 
     void __not_in_flash_func(dmaIRQHandler)()
     {
         if (dma_hw->ints0 & (1 << dmaChData1))
         {
+#if 1
             dma_hw->ints0 = 1 << dmaChData1;
             dataTransferComplete_ = true;
+#else
+            if (auto nextUpdateLine = nextTransferLine_ + 1; nextUpdateLine < N_SCAN_LINES)
+            {
+                waitForUpdateReady(nextUpdateLine);
+            }
+
+            dma_hw->ints0 = 1 << dmaChData1;
+            // dataTransferComplete_ = true;
+
+            transferAndUpdateNextLine();
+#endif
         }
     }
 
@@ -749,6 +941,9 @@ struct LEDDriver
     {
         LEDDriverInst_->dmaIRQHandler();
     }
+
+    uint32_t latestSendCycles_ = 0;
+    bool requestSendLoopDump_ = false;
 
     void __not_in_flash_func(loop)()
     {
@@ -761,7 +956,6 @@ struct LEDDriver
         while (1)
         {
             auto t0 = util::getSysTickCounter24();
-
             setupPIOCommandProgram();
 
             // まず VSync 等のコマンドを送る
@@ -789,23 +983,50 @@ struct LEDDriver
             auto dt10 = (t0 - t1) & 0xffffff;
             int leftCycle = capture_.getFieldIntervalCycles() - dt10;
             constexpr auto cyclePWM = computeLEDPWMCycle(PWM_PULSE_PER_LINE, N_SCAN_LINES);
-            auto nPWM = std::max(1, (leftCycle - (cyclePWM >> 3)) / cyclePWM); // 1/8周期マージン
+            auto nPWM = std::max(1, (leftCycle - (cyclePWM >> 6)) / cyclePWM); // 1/64周期マージン
             currentRefreshPerField_ = nPWM;
 
             // clk出るまでPWM始めない
             startLEDPWM(PWM_PULSE_PER_LINE, N_SCAN_LINES, nPWM);
 
+#if 1
+            struct Log
+            {
+                uint32_t update;
+                uint32_t updateWait;
+                uint32_t updateText;
+                uint32_t updateCvt;
+                uint32_t updateFree;
+                uint32_t wait;
+                uint32_t transfer;
+            };
+            static Log log[N_SCAN_LINES];
+            auto *plog = log;
+
             int dbid = 0;
             for (int i = 0; i < N_SCAN_LINES; ++i)
             {
-                updateDataBuffer(dbid, i);
+                auto lt0 = util::getSysTickCounter24();
+                updateDataBuffer(dbid, i, true);
+                auto lt1 = util::getSysTickCounter24();
                 waitDataTransfer(); // DMAまち
                 dataTransferComplete_ = false;
+                auto lt2 = util::getSysTickCounter24();
                 transferData({dataBuffer_[dbid][0],
                               dataBuffer_[dbid][1],
                               dataBuffer_[dbid][2]},
                              UNIT_DATA_BUFFER_SIZE + 1); // DMA開始
                 dbid ^= 1;
+
+                auto lt3 = util::getSysTickCounter24();
+                plog->update = (lt0 - lt1) & 0xffffff;
+                plog->updateWait = (updateDataBuffertTiming_.t0 - updateDataBuffertTiming_.t1) & 0xffffff;
+                plog->updateText = (updateDataBuffertTiming_.t1 - updateDataBuffertTiming_.t2) & 0xffffff;
+                plog->updateCvt = (updateDataBuffertTiming_.t2 - updateDataBuffertTiming_.t3) & 0xffffff;
+                plog->updateFree = (updateDataBuffertTiming_.t3 - updateDataBuffertTiming_.t4) & 0xffffff;
+                plog->wait = (lt1 - lt2) & 0xffffff;
+                plog->transfer = (lt2 - lt3) & 0xffffff;
+                ++plog;
             }
 
             finishLEDPWM();
@@ -814,12 +1035,46 @@ struct LEDDriver
             waitDataTransfer();
             finishDataTransfer();
             assert(dataTransferComplete_);
+#else
+            startTransferFrame();
+
+            while (!isDataTransferCompleted())
+            {
+                compositeTextLayer();
+            }
+
+            finishLEDPWM();
+            waitForScanStall();
+
+            //            waitDataTransfer();
+            finishDataTransfer();
+#endif
 
             // sleep_us(1);
             frameBuffer_.flipReadPlane();
 
             gpio_put(PICO_DEFAULT_LED_PIN, led);
             led ^= 1;
+
+            NVSettings::instance().tick();
+
+            auto t2 = util::getSysTickCounter24();
+            latestSendCycles_ = (t0 - t2) & 0xffffff;
+
+            if (requestSendLoopDump_)
+            {
+                requestSendLoopDump_ = false;
+
+                int i = 0;
+                for (auto &l : log)
+                {
+                    printf("%d: u%d(%d+%d+%d+%d) w%d t%d\n", i, l.update, l.updateWait, l.updateText, l.updateCvt, l.updateFree, l.wait, l.transfer);
+                    ++i;
+                }
+                printf("t0: %d\n", (t0 - t1) & 0xffffff);
+                printf("t1: %d\n", (t1 - t2) & 0xffffff);
+                printf("total: %d\n", latestSendCycles_);
+            }
         }
     }
 
@@ -853,8 +1108,31 @@ struct LEDDriver
         textPlane_.enableShadow(true);
         textPlane_.enableTransBlack(false);
 
-        textPlane_.printf(40 - 8, 25, "%d.%dFPS",
-                          fps16 >> 4, ((fps16 & 15) * 10) >> 4);
+        if (!menu_.isOpened())
+        {
+            if (infoMode_ >= static_cast<int>(InfoMode::FPS_ONLY))
+            {
+                textPlane_.printf(40 - 8, 25, "%d.%dFPS",
+                                  fps16 >> 4, ((fps16 & 15) * 10) >> 4);
+            }
+            if (infoMode_ >= static_cast<int>(InfoMode::ALL))
+            {
+                textPlane_.printf(40 - 14, 25, "%2dRPF", currentRefreshPerField_);
+                switch (1)
+                {
+                case 0:
+                    textPlane_.printf(40 - 13, 24, "Send %7d", latestSendCycles_);
+                    break;
+
+                case 1:
+                    textPlane_.printf(0, 24, "ST%d SS%d FR%d %d LK%d %d",
+                                      adv7181_.getSTDIState().enabled, adv7181_.getSSPDState().enabled,
+                                      adv7181_.isFreeRunCP(), adv7181_.isFreeRunSDP(),
+                                      adv7181_.isPLLLockedCP(), adv7181_.isPLLLockedSDP());
+                    break;
+                }
+            }
+        }
 #endif
     }
 
@@ -890,30 +1168,79 @@ struct LEDDriver
         enableVideoCaptureIRQ(false);
     }
 
-    int currentInput_ = 0;
-
-    void createMenu()
+    void initMenu()
     {
-        static int tmp = 100;
+        static bool inputSelClose = false;
         static constexpr const char *inputTexts[] = {"VIDEO", "S VIDEO", "COMPONENT", "RGB"};
         menu_.appendItem(&currentInput_, "INPUT", std::begin(inputTexts), std::end(inputTexts),
                          "Select Input",
                          {},
                          [&]
                          {
-                             printf("input %d\n", currentInput_);
+                             auto v = static_cast<device::SignalInput>(currentInput_ + 1);
+                             adv7181_.selectInput(v);
+                             device::selectAudioInput(pca9554_, v);
+                             capture_.resetSignalDetection();
+                             inputSelClose = true;
+                             menu_.close();
                          });
-        menu_.appendItem(&tmp, {256, 700}, "H SAMPLE", "Reset", {}, [&]
-                         { tmp = 585; });
+
+        capture_.initMenu(menu_);
+
+        if (tpa2016_.isExist())
+        {
+            static constexpr std::array<const char *, 2> enableTexts = {"DISABLE", "ENABLE"};
+            auto apply = [&]
+            { speakerSettings_.apply(tpa2016_); };
+            menu_.appendItem(&speakerSettings_.gainDB, {-28, 30}, "Spk GAIN", {}, apply);
+#ifndef NDEBUG
+            menu_.appendItem(&speakerSettings_.maxGainDB, {18, 30}, "Spk MGAIN", {}, apply);
+            menu_.appendItem(&speakerSettings_.compressionRatioLog2, {0, 3}, "Spk CmpR", {}, apply);
+            menu_.appendItem(&speakerSettings_.enableLimiter, "Spk Limit", enableTexts.begin(), enableTexts.end(), {}, apply);
+            menu_.appendItem(&speakerSettings_.limiterLevelDBx2, {-13, 18}, "Spk LimLV2", {}, apply);
+            menu_.appendItem(&speakerSettings_.enableNoiseGate, "Spk N.Gate", enableTexts.begin(), enableTexts.end(), {}, apply);
+            menu_.appendItem(&speakerSettings_.noiseGateThreshold, {0, 3}, "Spk N.G.Th", {}, apply);
+#endif
+        }
+
+        static constexpr const char *
+            infoModeTexts[] = {"NONE", "FPS ONLY", "ALL"};
+        menu_.appendItem(&infoMode_, "INFO", std::begin(infoModeTexts), std::end(infoModeTexts));
 
         menu_.appendItem("CLOSE MENU", {},
                          [&]
                          { menu_.close(); });
+
+        infoMode_ = NVSettings::instance().getState().infoMode;
+
+#ifndef NDEBUG
+        menu_.appendItem("DUMP FB", "Dump FrameBuffer",
+                         [&]
+                         { frameBuffer_.requestDump(); });
+        menu_.appendItem("DUMP SEND", "Dump Send Timing",
+                         [&]
+                         { requestSendLoopDump_ = true; });
+#endif
+
+        menu_.setCloseFunc([&]
+                           {
+                            auto& nvs = NVSettings::instance();
+                            nvs.setSpeakerGain(speakerSettings_.gainDB);
+                            nvs.setLatestInput(static_cast<device::SignalInput>(currentInput_));
+                            nvs.setInfoMode(infoMode_);
+                            if (!inputSelClose)
+                            {
+                                capture_.onMenuClose();
+                            }
+                            inputSelClose = false;
+                            nvs.flash(); });
     }
 
     void __not_in_flash_func(mainProc)()
     {
-        createMenu();
+        capture_.setADV7181(&adv7181_);
+
+        initMenu();
         setVideoCaptureIRQ();
 
         int yofs = 0;
@@ -921,8 +1248,12 @@ struct LEDDriver
 
         int prevButtons = 0xf;
 
+        //        watchdog_enable(5000, true);
+
         while (true)
         {
+            watchdog_update();
+
             textPlane_.clear();
             //            printf("%d\n", yofs);
             if (!LED_PANEL_DRIVER_DEBUG)
@@ -959,7 +1290,7 @@ struct LEDDriver
 
                 prevButtons = curButtons;
 
-                if (!capture_.tick(frameBuffer_, adv7181_))
+                if (!capture_.tick(frameBuffer_))
                 {
                     continue;
                 }
@@ -1037,8 +1368,25 @@ namespace
 
 void __not_in_flash_func(core1_main)()
 {
+    util::initSysTick();
     driver_.loop();
 }
+
+struct Test
+{
+    int v;
+    Test()
+    {
+        constexpr uint LED_PIN = PICO_DEFAULT_LED_PIN;
+        gpio_init(LED_PIN);
+        gpio_set_dir(LED_PIN, GPIO_OUT);
+        gpio_put(LED_PIN, 1);
+
+        v = LED_PIN;
+    }
+};
+
+Test test_;
 
 int main()
 {
@@ -1056,6 +1404,8 @@ int main()
     gpio_put(LED_PIN, 0);
 
     printf("\n\nstart.\n");
+
+    NVSettings::instance().load();
     graphics::initImageProcessor();
 
     initPIO();
@@ -1070,6 +1420,7 @@ int main()
     {
         adv7181_.init(i2cIF);
         pca9554_.init(i2cIF, device::PCA9554::Type::C);
+        tpa2016_.init(i2cIF);
     }
 
     gpio_put(LED_PIN, 1);
@@ -1086,12 +1437,19 @@ int main()
     {
         pca9554_.setPortDir(0b00111111);
 
-        auto defaultInput = device::SignalInput::RGB21;
+        auto defaultInput = device::SignalInput::COMPOSITE;
+        // auto defaultInput = device::SignalInput::RGB21;
         // auto defaultInput = device::SignalInput::COMPONENT;
         adv7181_.selectInput(defaultInput);
         device::selectAudioInput(pca9554_, defaultInput);
 
         // adv7181_.setPLL(true, false, 900, 15980);
+
+        if (tpa2016_.isExist())
+        {
+            speakerSettings_.gainDB = NVSettings::instance().getState().speakerGain;
+            speakerSettings_.apply(tpa2016_);
+        }
     }
 
     multicore_launch_core1(core1_main);

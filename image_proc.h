@@ -36,7 +36,8 @@ namespace graphics
     //
     void setupResizeYCbCr420Config(size_t nDstPixels,
                                    size_t nSrcPixels,
-                                   size_t srcOfs);
+                                   size_t srcOfs,
+                                   size_t phase_x256);
     void resizeYCbCr420PreConfig(uint32_t *dst, size_t nDstPixels,
                                  const uint32_t *src);
 }

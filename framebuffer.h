@@ -24,16 +24,24 @@ namespace graphics
         void __not_in_flash_func(commitNextLine)(int lineID);
         void finishPlane();
 
+        void waitForCurrentPlaneLineReady(int y);
         int __not_in_flash_func(moveCurrentPlaneLine)(int y);
         void __not_in_flash_func(freeLine)(const std::initializer_list<int> &indices);
 
+        std::tuple<uint16_t *, bool> peekCurrentPlaneLineUnsafe(int y);
+        uint16_t *getWritePlaneLineUnsafe(int y);
+
         void flipReadPlane();
 
-        uint16_t *getWritePlaneLineUnsafe(int y);
+        size_t getFreeLineCount() const { return freeLines_.size(); }
+
+        void dumpState() const;
+        void requestDump() { dumpReq_ = true; }
 
     protected:
         Plane &getWritePlane() { return planes_[writePlaneID_]; }
         Plane &getReadPlane() { return planes_[readPlaneID_]; }
+        const Plane &getReadPlane() const { return planes_[readPlaneID_]; }
 
     private:
         std::vector<uint16_t> pixelBuffer_; // BGR565
@@ -56,5 +64,7 @@ namespace graphics
 
         util::SpinLock freeLock_;
         util::SpinLock planeLock_;
+
+        bool dumpReq_ = false;
     };
 }

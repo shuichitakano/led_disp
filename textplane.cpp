@@ -6,11 +6,13 @@
 #include "textplane.h"
 
 #include <algorithm>
+#include <utility>
 #include <cstring>
 #include <cstdio>
 #include <cstdarg>
 #include <cassert>
 #include <hardware/divider.h>
+#include <hardware/interp.h>
 
 namespace graphics
 {
@@ -19,6 +21,23 @@ namespace graphics
         constexpr uint8_t fontDataSrc_[] = {
 #include "font.h"
         };
+
+        constexpr int interleaveReverseBit(int v)
+        {
+            auto f = [](int v, int i)
+            {
+                return ((v >> i) & 1) << ((7 - i) * 2);
+            };
+            return f(v, 0) | f(v, 1) | f(v, 2) | f(v, 3) | f(v, 4) | f(v, 5) | f(v, 6) | f(v, 7);
+        }
+
+        template <std::size_t... I>
+        constexpr std::array<uint16_t, 256> makeInterleaveReverseTable(std::index_sequence<I...>)
+        {
+            return {interleaveReverseBit(I)...};
+        }
+
+        constexpr std::array<uint16_t, 256> interleaveReverseTable = makeInterleaveReverseTable(std::make_index_sequence<256>{});
 
         uint16_t fontData_[9][128];
 
@@ -40,7 +59,17 @@ namespace graphics
                     const int d_shd_base = d | dm1 | dp1;
                     const int d_shd = d_shd_base | (d_shd_base >> 1) | (d_shd_base >> 2);
 #endif
+
+#if 0
                     fontData_[y][i] = d_fg | (d_shd << 8);
+#else
+                    fontData_[y][i] = (interleaveReverseTable[d_fg] << 1) | interleaveReverseTable[d_shd];
+
+                    // 00: bg
+                    // 01: shd
+                    // 10: fg
+                    // 11: fg
+#endif
                 }
             }
         }
@@ -62,13 +91,38 @@ namespace graphics
     TextPlane::setPalette(size_t idx, uint16_t col)
     {
         assert(idx < N_COLORS);
-        palette_[idx] = col;
+        palette_[idx] = col | (col << 16);
     }
 
     void
     TextPlane::setPalette888(size_t idx, int r, int g, int b)
     {
         setPalette(idx, ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    }
+
+    void
+    TextPlane::setupComposite() const
+    {
+        // result[0] = accum[0] >> 2
+        // result[2] = (accum[0] & 0b1100) + base1
+
+        {
+            auto c = interp_default_config();
+            interp_config_set_shift(&c, 2);
+            interp_set_config(interp0_hw, 0, &c);
+        }
+        {
+            auto c = interp_default_config();
+            interp_config_set_mask(&c, 2, 3);        // 0b1100
+            interp_config_set_cross_input(&c, true); // accum[0] in
+            // interp_config_set_cross_result(&c, true); // accum[0] in
+            interp_set_config(interp0_hw, 1, &c);
+        }
+
+        interp0_hw->accum[0] = 0;
+        // interp0_hw->accum[1] = 0;
+        interp0_hw->base[0] = 0;
+        interp0_hw->base[1] = 0;
     }
 
     void
@@ -98,95 +152,131 @@ namespace graphics
         }
     }
 
+    namespace
+    {
+        inline void __not_in_flash_func(fillTransBlack)(uint16_t *dst)
+        {
+            auto proc2 = [](int i, auto d)
+            {
+                constexpr uint32_t trmask = 0b01111011111011110111101111101111;
+                d[i] = (d[i] >> 1) & trmask; // 6
+                // 3 cycle/pix
+            };
+
+            auto *d = reinterpret_cast<uint32_t *>(dst);
+            proc2(0, d);
+            proc2(1, d);
+            proc2(2, d);
+            proc2(3, d);
+        }
+
+        inline void __not_in_flash_func(compositeTransShadowed)(uint16_t *dst,
+                                                                uint32_t col, uint32_t colShadow, int fd)
+        {
+            uint32_t table[4];
+            table[1] = colShadow;
+            table[2] = col;
+            table[3] = col;
+
+            interp0_hw->base[1] = reinterpret_cast<uint32_t>(table);
+            interp0_hw->accum[0] = fd << 2;
+
+            auto proc2 = [](int i, auto table, auto dst)
+            {
+                constexpr uint32_t trmask = 0b01111011111011110111101111101111;
+                uint32_t d01 = *reinterpret_cast<const uint32_t *>(dst + i); // 2
+                uint32_t t01 = (d01 >> 1) & trmask;                          // 2
+                table[0] = t01;                                              // 2
+                auto *p0 = reinterpret_cast<uint16_t *>(interp0_hw->pop[1]); // 1
+                dst[i + 0] = p0[0];                                          // 3
+                auto *p1 = reinterpret_cast<uint16_t *>(interp0_hw->pop[1]); // 1
+                dst[i + 1] = p1[1];                                          // 3
+                // 7 cycle/pix
+            };
+
+            proc2(0, table, dst);
+            proc2(2, table, dst);
+            proc2(4, table, dst);
+            proc2(6, table, dst);
+        }
+
+        inline void __not_in_flash_func(compositeShadowed)(uint16_t *dst,
+                                                           uint32_t col, uint32_t colShadow, int fd)
+        {
+            uint32_t table[4];
+            table[1] = colShadow;
+            table[2] = col;
+            table[3] = col;
+
+            interp0_hw->base[1] = reinterpret_cast<uint32_t>(table);
+            interp0_hw->accum[0] = fd << 2;
+
+            auto proc2 = [](int i, auto table, auto dst)
+            {
+                constexpr uint32_t trmask = 0b01111011111011110111101111101111;
+                uint32_t d01 = *reinterpret_cast<const uint32_t *>(dst + i); // 2
+                table[0] = d01;                                              // 2
+                auto *p0 = reinterpret_cast<uint16_t *>(interp0_hw->pop[1]); // 1
+                dst[i + 0] = p0[0];                                          // 3
+                auto *p1 = reinterpret_cast<uint16_t *>(interp0_hw->pop[1]); // 1
+                dst[i + 1] = p1[1];                                          // 3
+                // 6 cycle/pix
+            };
+
+            proc2(0, table, dst);
+            proc2(2, table, dst);
+            proc2(4, table, dst);
+            proc2(6, table, dst);
+
+            // auto *tb = reinterpret_cast<uint16_t *>(interp0_hw->pop[1]); // 1
+            // if (tb != table)                                             // 2 or 4
+            // {
+            //     dst[i] = *tb; // 3
+            // }
+            // // 5 or 6 cycle
+        }
+    }
+
     void
     TextPlane::compositeChr(uint16_t *dst, Character c, int yofs) const
     {
-        constexpr int trmask = 0b0111101111101111;
-
         if (c.chr == ' ')
         {
             if (c.transBlack)
             {
-                auto dstEnd = dst + 8;
-                do
-                {
-                    *dst = (*dst >> 1) & trmask;
-                } while (++dst != dstEnd);
+                fillTransBlack(dst);
             }
             return;
         }
 
-        const int col = palette_[c.color];
-        const int colShadow = palette_[c.shadowColor];
+        const uint32_t col = palette_[c.color];
+        const uint32_t colShadow = palette_[c.shadowColor];
 
-        const int fd = fontData_[yofs][c.chr];
-        const int d_fg = fd;
-        const int d_shd = fd >> 8;
+        int fd = fontData_[yofs][c.chr];
 
         if (c.enableShadow)
         {
             if (c.transBlack)
             {
-                int mask = 0x80;
-                for (; mask; mask >>= 1, ++dst)
-                {
-                    if (d_fg & mask)
-                    {
-                        *dst = col;
-                    }
-                    else if (d_shd & mask)
-                    {
-                        *dst = colShadow;
-                    }
-                    else
-                    {
-                        *dst = (*dst >> 1) & trmask;
-                    }
-                }
+                compositeTransShadowed(dst, col, colShadow, fd);
             }
             else
             {
-                int mask = 0x80;
-                for (; mask; mask >>= 1, ++dst)
-                {
-                    if (d_fg & mask)
-                    {
-                        *dst = col;
-                    }
-                    else if (d_shd & mask)
-                    {
-                        *dst = colShadow;
-                    }
-                }
+                compositeShadowed(dst, col, colShadow, fd);
             }
         }
         else
         {
+            // todo
+            // 使用頻度が低いので最適化はいずれ
+            fd &= 0xaaaa;
             if (c.transBlack)
             {
-                int mask = 0x80;
-                for (; mask; mask >>= 1, ++dst)
-                {
-                    if (d_fg & mask)
-                    {
-                        *dst = col;
-                    }
-                    else
-                    {
-                        *dst = (*dst >> 1) & trmask;
-                    }
-                }
+                compositeTransShadowed(dst, col, colShadow, fd);
             }
             else
             {
-                int mask = 0x80;
-                for (; mask; mask >>= 1, ++dst)
-                {
-                    if (d_fg & mask)
-                    {
-                        *dst = col;
-                    }
-                }
+                compositeShadowed(dst, col, colShadow, fd);
             }
         }
     }
@@ -259,12 +349,22 @@ namespace graphics
         tmp.enableShadow = shadow;
         tmp.transBlack = trans;
 
+        auto prevBegin = begin;
+
         begin = std::min<int>(begin, x);
 
         auto p = text.data() + x;
         while (*str && x < WIDTH)
         {
             tmp.chr = *str++;
+            *p++ = tmp;
+            ++x;
+        }
+
+        tmp = {};
+        tmp.chr = ' ';
+        while (x < prevBegin)
+        {
             *p++ = tmp;
             ++x;
         }

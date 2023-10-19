@@ -14,6 +14,8 @@
 #include <cmath>
 #include "image_proc.h"
 #include "util.h"
+#include "menu.h"
+#include "nv_settings.h"
 #include "app.h"
 
 #define ENABLE_CURSOR 0
@@ -21,13 +23,22 @@
 namespace video
 {
 
-    bool VideoCapture::tick(graphics::FrameBuffer &frameBuffer,
-                            device::ADV7181 &adv7181)
+    bool VideoCapture::tick(graphics::FrameBuffer &frameBuffer)
     {
-        if (signalDetected_ && test(currentSTDIState_, adv7181.getSTDIState(), 10))
+        assert(adv7181_);
+#if 0
+        if (isFreeRun_ != adv7181_->isFreeRun())
         {
-            captureFrame2(frameBuffer);
-            adv7181.updateStatus();
+            signalDetected_ = false;
+        }
+        isFreeRun_ = adv7181_->isFreeRun();
+#endif
+        if (signalDetected_ &&
+            (adv7181_->isSDPMode() ||
+             test(currentSTDIState_, adv7181_->getSTDIState(), 10)))
+        {
+            captureFrame(frameBuffer);
+            adv7181_->updateStatus();
             return true;
         }
         else
@@ -37,38 +48,55 @@ namespace video
             auto waitForCounterStable = [&]
             {
                 constexpr int timeout = 100; // ms
-                if (adv7181.getCurrentInput() == device::SignalInput::RGB21)
+                if (adv7181_->getCurrentInput() == device::SignalInput::RGB21)
                 {
                     // for (auto csync : {true, false})
                     auto csync = isCSync_;
                     {
-                        adv7181.setRGBSyncModeCSync(csync);
-                        if (adv7181.waitForCounterStable(timeout))
+                        adv7181_->setRGBSyncModeCSync(csync);
+                        if (adv7181_->waitForCounterStable(timeout))
                         {
-                            printf("csync = %d\n", csync);
+                            DBGPRINT("csync = %d\n", csync);
                             return true;
                         }
                     }
                 }
                 else
                 {
-                    return adv7181.waitForCounterStable(timeout);
+                    return adv7181_->waitForCounterStable(timeout);
                 }
                 return false;
             };
-
-            if (waitForCounterStable())
+            if (adv7181_->isSDPMode() || waitForCounterStable())
             {
-                currentSTDIState_ = adv7181.getSTDIState();
+                currentSTDIState_ = adv7181_->getSTDIState();
                 currentSTDIState_.dump();
 
-                adv7181.setLineLength(currentSTDIState_.blockSize / 8);
+                if (currentSTDIState_.enabled)
+                {
+                    adv7181_->setLineLength(currentSTDIState_.blockSize / 8);
+                }
 
                 if (analyzeSignal())
                 {
                     measureInterval();
                     baseCycleCounter_ = -1;
                     // hdiv_ = DEFAULT_HDIV;
+
+                    if (auto *p = NVSettings::instance().findCaptureSettings(currentSTDIState_))
+                    {
+                        DBGPRINT("setting found! %p\n", p);
+                        resampleWidth_ = p->resampleWidth;
+                        resampleOfs_ = p->resampleOfs;
+                        vOfs_ = p->vOfs;
+                    }
+                    else
+                    {
+                        DBGPRINT("setting not found.\n");
+                        resampleWidth_ = 640;
+                        resampleOfs_ = 40;
+                        vOfs_ = 0;
+                    }
 
                     startBGCapture();
                 }
@@ -80,7 +108,7 @@ namespace video
             else
             {
                 isCSync_ ^= true;
-                printf("video signal is not stabled.\n");
+                DBGPRINT("video signal is not stabled.\n");
             }
         }
         return false;
@@ -89,12 +117,12 @@ namespace video
     ////
 
     void
-    VideoCapture::setHDiv(int v, device::ADV7181 &adv7181)
+    VideoCapture::setHDiv(int v)
     {
         hdiv_ = v;
 
         auto hfreq = (CPU_CLOCK_KHZ * 1000) / (lineIntervalCycles128_ >> 7);
-        adv7181.setPLL(true, false, v, hfreq);
+        adv7181_->setPLL(true, false, v, hfreq);
     }
 
     void
@@ -105,7 +133,7 @@ namespace video
         auto t = (baseTime_ - time) & 0xffffff;
         int l2 = hw_divider_u32_quotient_inlined((t << 8) + (lineIntervalCycles128_ >> 1),
                                                  lineIntervalCycles128_);
-        // printf("t %d, l2 %d\n", t, l2);
+        // DBGPRINT("t %d, l2 %d\n", t, l2);
 
         linfo.code = makeBT656TimingCodeByte(sav);
         linfo.time = t;
@@ -115,8 +143,13 @@ namespace video
         int d2 = l2 - (frameIntervalLines_ << 1);
         if (d2 >= 0)
         {
-            auto overTime = d2 * lineIntervalCycles128_ >> 8;
+#if 0
+            constexpr int maxCompensateLine_x2 = 6;
+            auto overTime = std::min(maxCompensateLine_x2, d2) * lineIntervalCycles128_ >> 8;
             baseTime_ = time - overTime;
+#else
+            baseTime_ = time - d2;
+#endif
         }
 
         startVideoCapture(line.data(), asUInt(sav), dataWidthInWords_);
@@ -146,7 +179,7 @@ namespace video
                 nextSAV = BT656TimingCode::SAV_ACTIVE_F0;
             }
             startCaptureLine(nextSAV, time);
-            // printf("%p, l%d, %x, %x, %d\n", line.data(), linfo.lineIdx_x2, asUInt(nextEAV), asUInt(nextSAV), error);
+            // DBGPRINT("%p, l%d, %x, %x, %d\n", line.data(), linfo.lineIdx_x2, asUInt(nextEAV), asUInt(nextSAV), error);
         }
         return true; // continue
     }
@@ -231,14 +264,14 @@ namespace video
     }
 
     void
-    VideoCapture::captureFrame2(graphics::FrameBuffer &frameBuffer)
+    VideoCapture::captureFrame(graphics::FrameBuffer &frameBuffer)
     {
         // buffer_.reset();
 
         int halfFrameInterval_x2 = frameIntervalLines_;
         int frameInterval_x2 = frameIntervalLines_ << 1;
         int baseOfs_x2 =
-            -(activeLineOfs_ << 1) + (3 - currentField_) * halfFrameInterval_x2;
+            -(activeLineOfs_ << 1) + (3 - currentField_) * halfFrameInterval_x2 + vOfs_ * 2;
 
         // (0-5-242.5*1+484*1+242.5)%485-242.5
 
@@ -247,17 +280,18 @@ namespace video
             return hw_divider_u32_remainder_inlined(line_x2 + baseOfs_x2, frameInterval_x2) - halfFrameInterval_x2;
         };
 
-        // auto nSrcPixels = (dataWidthInWords_ << 1) - leftMargin_ - rightMargin_;
-        auto nSrcPixels = 720 - leftMargin_ - rightMargin_;
-
-        graphics::setupResizeYCbCr420Config(DISPLAY_WIDTH, nSrcPixels, leftMargin_);
+        auto nSrcPixels = std::min(720 - resampleOfs_, resampleWidth_);
+        graphics::setupResizeYCbCr420Config(DISPLAY_WIDTH, nSrcPixels, resampleOfs_, resamplePhaseOfs_ * 16);
 
         struct Log
         {
             uint16_t line;
             uint16_t tWait;
-            uint16_t tAlloc;
+            uint32_t tRecover;
+            uint32_t tAlloc;
             uint16_t tProc;
+            uint8_t freeLines;
+            uint8_t freeStreamBuffers;
         };
         static Log logs[240];
         int ilog = 0;
@@ -272,8 +306,9 @@ namespace video
             auto t1 = util::getSysTickCounter24();
 
             auto [line, linfo] = buffer_.getCurrentReadLine();
-            auto l = adjustLine(linfo.lineIdx_x2) >> 1;
-            // printf("l = %d, %d\n", l, linfo.lineIdx_x2);
+
+            const auto lx2 = adjustLine(linfo.lineIdx_x2);
+            const auto l = lx2 >> 1;
             updateBound(line.data(), l + activeLineOfs_);
             if (l < y)
             {
@@ -282,14 +317,21 @@ namespace video
 
             auto &log = logs[ilog++];
 
+#ifdef NDEBUG
+            constexpr int errorColor = 0;
+#else
+            constexpr int errorColor = 0x2080;
+#endif
+
             while (l != y && y < activeLines)
             {
                 int dstLineID = frameBuffer.allocateLine();
                 auto p = frameBuffer.getLineBuffer(dstLineID);
-                memset(p, 0, DISPLAY_WIDTH * 2);
+                memset(p, errorColor, DISPLAY_WIDTH * 2);
                 frameBuffer.commitNextLine(dstLineID);
                 ++y;
             }
+            auto t2 = util::getSysTickCounter24();
 
             if (dumpLineReq_ == y)
             {
@@ -299,14 +341,16 @@ namespace video
 
             if (y < activeLines)
             {
+                auto freeLines = frameBuffer.getFreeLineCount();
                 int dstLineID = frameBuffer.allocateLine();
                 auto dstBuffer = frameBuffer.getLineBuffer(dstLineID);
-                auto t2 = util::getSysTickCounter24();
+                auto t3 = util::getSysTickCounter24();
 
                 if (linfo.error)
                 // if (0)
                 {
-                    memset(dstBuffer, 0, DISPLAY_WIDTH * 2);
+                    //                    memset(dstBuffer, 0, DISPLAY_WIDTH * 2);
+                    memset(dstBuffer, 0x4020, DISPLAY_WIDTH * 2);
                 }
                 else
                 {
@@ -326,11 +370,14 @@ namespace video
                 frameBuffer.commitNextLine(dstLineID);
                 ++y;
 
-                auto t3 = util::getSysTickCounter24();
+                auto t4 = util::getSysTickCounter24();
                 log.line = l;
                 log.tWait = (t0 - t1) & 0xffffff;
-                log.tAlloc = (t1 - t2) & 0xffffff;
-                log.tProc = (t2 - t3) & 0xffffff;
+                log.tRecover = (t1 - t2) & 0xffffff;
+                log.tAlloc = (t2 - t3) & 0xffffff;
+                log.tProc = (t3 - t4) & 0xffffff;
+                log.freeLines = freeLines;
+                log.freeStreamBuffers = buffer_.getFreeBufferSize();
             }
         }
 
@@ -351,235 +398,14 @@ namespace video
             for (int i = 0; i < ilog; ++i)
             {
                 auto &l = logs[i];
-                printf("%d: l %d, tw %d, ta %d, tp %d\n", i, l.line, l.tWait, l.tAlloc, l.tProc);
+                printf("%d: l %d, tw %d, tr %d, ta %d, tp %d, fl %d, fb %d\n",
+                       i, l.line, l.tWait, l.tRecover, l.tAlloc, l.tProc, l.freeLines, l.freeStreamBuffers);
             }
+
             logReq_ = false;
         }
 #endif
-
         currentField_ ^= 1;
-    }
-
-    namespace
-    {
-#define ENABLE_LOG 1
-#if ENABLE_LOG
-        struct Timing
-        {
-            const char *name;
-            uint32_t counter;
-        };
-
-        Timing timingLog_[4096];
-        Timing *curTimingLog_ = timingLog_;
-
-        void resetMark()
-        {
-            curTimingLog_ = timingLog_;
-        }
-
-        void mark(const char *name)
-        {
-            curTimingLog_->counter = util::getSysTickCounter24();
-            curTimingLog_->name = name;
-            ++curTimingLog_;
-        }
-
-        void dumpTiming()
-        {
-            auto *p = timingLog_;
-            auto *prev = p;
-            ++p;
-            while (p != curTimingLog_)
-            {
-                printf("%s: %d\n", prev->name, (prev->counter - p->counter) & 0xffffff);
-                prev = p++;
-            }
-
-            resetMark();
-        }
-#else
-        void resetMark()
-        {
-        }
-
-        void mark(const char *)
-        {
-        }
-
-        void dumpTiming()
-        {
-        }
-#endif
-    }
-
-    void VideoCapture::captureFrame(graphics::FrameBuffer &frameBuffer)
-    {
-        resetMark();
-        mark(currentField_ == 0 ? "wait V0" : "wait V1");
-
-        auto activeLineOfs = activeLineOfs_;
-
-        // よくわからん調整…
-        int baseOfs = fieldInfo_[currentField_].activeLines2 ? 1 : 0;
-
-#if 0
-    activeLineOfs += currentField_ != 0 ? 15 : 0;
-#endif
-
-        int y = 0;
-        if (startLine_)
-        {
-            mark("fill pre active line");
-            for (auto ct = startLine_; ct; --ct)
-            {
-                int lineID = frameBuffer.allocateLine();
-                auto p = frameBuffer.getLineBuffer(lineID);
-                memset(p, 0, DISPLAY_WIDTH * 2);
-                frameBuffer.commitNextLine(lineID);
-                ++y;
-            }
-        }
-
-        auto srcPixels = (dataWidthInWords_ << 1) - leftMargin_ - rightMargin_;
-
-        // VSync確認
-        auto eav = currentField_ == 0 ? EAV_VSYNC_F0 : EAV_VSYNC_F1;
-        startVideoCapture(buffer_.getRawBuffer().data(), eav, 1);
-        waitVideoCapture();
-
-        auto ctv0 = util::getSysTickCounter24() & 0xffffff;
-
-        auto vsyncEAV = eav;
-        auto vsyncEAVCount = 1;
-
-        int activeLine = 0;
-
-        auto getBuffer = [&](int dbid)
-        {
-            return buffer_.getBuffer(dbid).data();
-        };
-        auto captureLine = getBuffer(0);
-
-        auto getNextSAV = [](uint32_t eav)
-        {
-            return (uint32_t)getSAVCorrespondingToEAV((BT656TimingCode)eav);
-        };
-
-        mark("start capture active line");
-        auto sav = getNextSAV(eav);
-        startVideoCapture(captureLine, sav, dataWidthInWords_);
-
-        int aaa = 0;
-        if (baseCycleCounter_ >= 0)
-        {
-            int df = (baseCycleCounter_ - ctv0) & 0xffffff;
-            int fieldLines = hw_divider_u32_quotient_inlined(
-                (df << 7) + (lineIntervalCycles128_ >> 1),
-                lineIntervalCycles128_);
-            int adj = (frameIntervalLines_ >> 1) - fieldLines + baseOfs;
-            // aaa = adj;
-            aaa = fieldLines;
-            if (adj == 0 || (++deviatedFrames_ == 30))
-            {
-                deviatedFrames_ = 0;
-            }
-            else
-            {
-                // 基準調整
-                // ctv0 -= (adj * lineIntervalCycles256_ >> 8);
-            }
-            // activeLineOfs += adj + baseOfs;
-            activeLineOfs += baseOfs;
-        }
-        baseCycleCounter_ = ctv0;
-
-        while (y < DISPLAY_HEIGHT && activeLine < activeLines_)
-        {
-            bool skip = activeLine < activeLineOfs;
-            ++activeLine;
-
-            auto video = captureLine;
-            captureLine = getBuffer(activeLine & 1);
-
-            waitVideoCapture();
-
-            bool error = false;
-            if (activeLine < activeLines_)
-            {
-                auto ofs = activeWidth_ >> 1;
-                eav = video[ofs];
-                // マーカーがずれていそうならエラーとしつつリカバリーを試みる
-                if ((eav & 0xff) != 0xff)
-                {
-                    error = true;
-                    auto pv = video[ofs + 1];
-                    do
-                    {
-                        eav = (eav >> 8) | ((pv << 24) & 0xff000000);
-                        pv >>= 8;
-                    } while (pv && (eav & 0xff) != 0xff);
-                }
-
-                sav = getNextSAV(eav);
-                if (!sav)
-                {
-                    printf("error eav = %08x, y %d, al %d\n", eav, y, activeLine);
-                    util::dump(video, video + dataWidthInWords_);
-                    break;
-                    return;
-                }
-                startVideoCapture(captureLine, sav, dataWidthInWords_);
-            }
-
-            if (eav == vsyncEAV)
-                ++vsyncEAVCount;
-
-            if (!skip)
-            {
-                mark("proc active line");
-                int lineID = frameBuffer.allocateLine();
-                auto dstBuffer = frameBuffer.getLineBuffer(lineID);
-
-                if (error)
-                {
-                    memset(dstBuffer, 0, DISPLAY_WIDTH * 2);
-                }
-                else
-                {
-                    uint32_t resized[DISPLAY_WIDTH]; // 1280byte のこりstack注意
-                    graphics::resizeYCbCr420(resized, DISPLAY_WIDTH, video, srcPixels, leftMargin_);
-                    graphics::convertYCbCr2RGB565(dstBuffer, resized, DISPLAY_WIDTH);
-                }
-                frameBuffer.commitNextLine(lineID);
-                ++y;
-            }
-            else
-            {
-                mark("skip line");
-            }
-        }
-
-        mark("post active");
-        for (auto ct = DISPLAY_HEIGHT - y; ct > 0; --ct)
-        {
-            int lineID = frameBuffer.allocateLine();
-            auto p = frameBuffer.getLineBuffer(lineID);
-            memset(p, 0, DISPLAY_WIDTH * 2);
-            frameBuffer.commitNextLine(lineID);
-            ++y;
-        }
-
-        // int d = fieldInfo_[currentField_].preVSyncLines - vsyncEAVCount;
-        // if (d)
-        //     printf("%d:%d, %d\n", currentField_, d, vsyncEAVCount);
-
-        // printf("%d: %d\n", currentField_, aaa);
-        currentField_ ^= 1;
-
-        mark("end");
-
-        // dumpTiming();
     }
 
     bool
@@ -645,7 +471,7 @@ namespace video
         uint8_t lineCodeLog[(MAX_ACTIVE_LINES + MAX_VBLANK_LINES) * 2];
         int analyzeLine = 0;
 
-        static uint32_t lineCt[(MAX_ACTIVE_LINES + MAX_VBLANK_LINES) * 2];
+        std::vector<uint32_t> lineCt((MAX_ACTIVE_LINES + MAX_VBLANK_LINES) * 2);
 
         // Active 期間のライン数を数える
         startVideoCapture(buffer.data(), EAV_ACTIVE_F0, 1);
@@ -695,7 +521,9 @@ namespace video
                 if (nextEAVbyte < 0)
                 {
                     printf("%s: error: no timing code, count = %d\n", name, count);
+#ifndef NDEBUG
                     util::dump(buffer.begin(), buffer.begin() + readSizeInWord);
+#endif
                     return {-1, 0};
                 }
                 if (nextEAVbyte != targetEAVbyte)
@@ -712,15 +540,18 @@ namespace video
             }
         };
 
+        bool forceF0 = false;
         std::array<FieldInfo, 2> fields;
-        for (int i = 0; i < 2; ++i)
+        for (int ii = 0; ii < 2; ++ii)
         {
+            int i = forceF0 || ii == 0 ? 0 : 1;
+
             // Active
             const auto savActive0 = i == 0 ? SAV_ACTIVE_F0 : SAV_ACTIVE_F1;
             const auto eavActive0 = i == 0 ? EAV_ACTIVE_F0 : EAV_ACTIVE_F1;
-            std::tie(nextEAVbyte, fields[i].activeLines) = countLines(savActive0, eavActive0,
-                                                                      nextEAVbyte, MAX_ACTIVE_LINES,
-                                                                      i == 0 ? "F0" : "F1");
+            std::tie(nextEAVbyte, fields[ii].activeLines) = countLines(savActive0, eavActive0,
+                                                                       nextEAVbyte, MAX_ACTIVE_LINES,
+                                                                       i == 0 ? "F0" : "F1");
             if (nextEAVbyte < 0)
             {
                 return false;
@@ -728,9 +559,17 @@ namespace video
 
             const auto savActive1 = i == 0 ? SAV_ACTIVE_F1 : SAV_ACTIVE_F0;
             const auto eavActive1 = i == 0 ? EAV_ACTIVE_F1 : EAV_ACTIVE_F0;
-            std::tie(nextEAVbyte, fields[i].activeLines2) = countLines(savActive1, eavActive1,
-                                                                       nextEAVbyte, MAX_ACTIVE_LINES,
-                                                                       i == 0 ? "F1" : "F0");
+            std::tie(nextEAVbyte, fields[ii].activeLines2) = countLines(savActive1, eavActive1,
+                                                                        nextEAVbyte, MAX_ACTIVE_LINES,
+                                                                        i == 0 ? "F1" : "F0");
+            if (nextEAVbyte < 0)
+            {
+                return false;
+            }
+
+            std::tie(nextEAVbyte, fields[ii].activeLines3) = countLines(savActive0, eavActive0,
+                                                                        nextEAVbyte, MAX_ACTIVE_LINES,
+                                                                        i == 0 ? "F0" : "F1");
             if (nextEAVbyte < 0)
             {
                 return false;
@@ -739,9 +578,9 @@ namespace video
             // Post VSync
             const auto savVsync0 = i == 0 ? SAV_VSYNC_F0 : SAV_VSYNC_F1;
             const auto eavVsync0 = i == 0 ? EAV_VSYNC_F0 : EAV_VSYNC_F1;
-            std::tie(nextEAVbyte, fields[i].postVSyncLines) = countLines(savVsync0, eavVsync0,
-                                                                         nextEAVbyte, MAX_VBLANK_LINES / 2,
-                                                                         i == 0 ? "V0(post)" : "V1(post)");
+            std::tie(nextEAVbyte, fields[ii].postVSyncLines) = countLines(savVsync0, eavVsync0,
+                                                                          nextEAVbyte, MAX_VBLANK_LINES / 2,
+                                                                          i == 0 ? "V0(post)" : "V1(post)");
             if (nextEAVbyte < 0)
             {
                 return false;
@@ -750,18 +589,31 @@ namespace video
             // Pre VSync
             const auto savVsync1 = i == 0 ? SAV_VSYNC_F1 : SAV_VSYNC_F0;
             const auto eavVsync1 = i == 0 ? EAV_VSYNC_F1 : EAV_VSYNC_F0;
-            std::tie(nextEAVbyte, fields[i ^ 1].preVSyncLines) = countLines(savVsync1, eavVsync1,
-                                                                            nextEAVbyte, MAX_VBLANK_LINES / 2,
-                                                                            i == 0 ? "V1(pre)" : "V0(pre)");
+            std::tie(nextEAVbyte, fields[ii ^ 1].preVSyncLines) = countLines(savVsync1, eavVsync1,
+                                                                             nextEAVbyte, MAX_VBLANK_LINES / 2,
+                                                                             i == 0 ? "V1(pre)" : "V0(pre)");
             if (nextEAVbyte < 0)
             {
                 return false;
+            }
+
+            std::tie(nextEAVbyte, fields[ii].postVSyncLines2) = countLines(savVsync0, eavVsync0,
+                                                                           nextEAVbyte, MAX_VBLANK_LINES / 2,
+                                                                           i == 0 ? "V0(post)" : "V1(post)");
+            if (nextEAVbyte < 0)
+            {
+                return false;
+            }
+            if (fields[0].postVSyncLines2)
+            {
+                forceF0 = true;
+                // どっちのフィールドもF0が来ることがある
             }
         }
 
         auto t1 = util::getSysTickCounter24();
 
-#if 0
+#if 1
         pt = t0;
         for (int i = 0; i < analyzeLine; ++i)
         {
@@ -784,8 +636,8 @@ namespace video
                 };
                 return "unknown";
             }();
-            // printf("%2d: %d: %02x (%s) \n", i, dt, v, code);
-            printf("%2d: %d: %f:  %02x (%s) \n", i, dt, l, v, code);
+            // DBGPRINT("%2d: %d: %02x (%s) \n", i, dt, v, code);
+            DBGPRINT("%2d: %d: %f:  %02x (%s) \n", i, dt, l, v, code);
         }
 #endif
 
@@ -816,7 +668,9 @@ namespace video
         // activeLineOfs_ = minV - maxV;
         activeLineOfs_ = fields[0].preVSyncLines > fields[1].preVSyncLines ? 0 : minV - maxV;
         // activeLines_ = std::max(fields[0].activeLines, fields[1].activeLines);
-        activeLines_ = std::max(fields[0].activeLines, fields[1].activeLines) - activeLineOfs_;
+        activeLines_ = std::max(fields[0].getTotalActiveLines(),
+                                fields[1].getTotalActiveLines()) -
+                       activeLineOfs_;
         //  activeLines_ = fields[0].activeLines;
         startLine_ = 0;
         currentField_ = 0;
@@ -831,17 +685,17 @@ namespace video
 
         //    activeLines_ /= 2;
 
-        printf("Data width  : %d.\n", activeWidth_);
-        printf("H blank     : %d.%d.\n", hBlankSize >> 1, hBlankSize & 1 ? 5 : 0);
+        DBGPRINT("Data width  : %d.\n", activeWidth_);
+        DBGPRINT("H blank     : %d.%d.\n", hBlankSize >> 1, hBlankSize & 1 ? 5 : 0);
         for (int i = 0; i < 2; ++i)
         {
-            printf("Field%d      : V(pre) %d, Active %d+%d, V(post) %d\n",
-                   i, fields[i].preVSyncLines,
-                   fields[i].activeLines, fields[i].activeLines2,
-                   fields[i].postVSyncLines);
+            DBGPRINT("Field%d      : V(pre) %d, Active %d+%d+%d, V(post) %d\n",
+                     i, fields[i].preVSyncLines,
+                     fields[i].activeLines, fields[i].activeLines2, fields[i].activeLines3,
+                     fields[i].postVSyncLines);
         }
-        printf("V sync cycle: %d\n", vSyncIntervalCycles_);
-        printf("FPS         : %f\n", (float)CPU_CLOCK_KHZ * 1000 / vSyncIntervalCycles_);
+        DBGPRINT("V sync cycle: %d\n", vSyncIntervalCycles_);
+        DBGPRINT("FPS         : %f\n", (float)CPU_CLOCK_KHZ * 1000 / vSyncIntervalCycles_);
 
         return true;
     }
@@ -885,9 +739,9 @@ namespace video
             d2 /= ct;
 
             lineIntervalCycles128_ = ave128;
-            printf("line interval: ave %f, sigma %f\n",
-                   ave128 / 128.0f,
-                   sqrt(d2 / ct / 128.0f));
+            DBGPRINT("line interval: ave %f, sigma %f\n",
+                     ave128 / 128.0f,
+                     sqrt(d2 / ct / 128.0f));
         }
         //
         {
@@ -923,15 +777,15 @@ namespace video
 
             for (int i = 0; i < N_FRAMES; ++i)
             {
-                printf("f%d: %d\n", i, frameDiff[i]);
+                DBGPRINT("f%d: %d\n", i, frameDiff[i]);
             }
             auto aveFrame = totalDiff / N_FRAMES;
             frameIntervalCycles_ = aveFrame;
             frameIntervalLines_ = ((aveFrame << 7) + (lineIntervalCycles128_ >> 1)) / lineIntervalCycles128_;
-            printf("Frame interval: %d, %d lines (%f)\n",
-                   aveFrame,
-                   frameIntervalLines_,
-                   aveFrame * 128.0f / lineIntervalCycles128_);
+            DBGPRINT("Frame interval: %d, %d lines (%f)\n",
+                     aveFrame,
+                     frameIntervalLines_,
+                     aveFrame * 128.0f / lineIntervalCycles128_);
 
             // 266000000/50*2 = 10640000
             // 50fpsくらいで24bit必要
@@ -946,14 +800,14 @@ namespace video
 
         startVideoCapture(buffer.data(), EAV_ACTIVE_F0, buffer.size());
         waitVideoCapture();
-        printf("Active line:\n");
+        DBGPRINT("Active line:\n");
         util::dump(buffer.begin(), buffer.end());
 
         startVideoCapture(buffer.data(), EAV_ACTIVE_F0, 1);
         waitVideoCapture();
         startVideoCapture(buffer.data(), EAV_VSYNC_F0, buffer.size());
         waitVideoCapture();
-        printf("VSync line:\n");
+        DBGPRINT("VSync line:\n");
         util::dump(buffer.begin(), buffer.end());
     }
 
@@ -968,17 +822,78 @@ namespace video
         uint32_t tmp[320];
         graphics::resizeYCbCr420(tmp, 320, buffer.data(), 720);
 
-        printf("src:\n");
+        DBGPRINT("src:\n");
         util::dump((uint16_t *)buffer.data(), (uint16_t *)buffer.data() + 720, "%04x ");
-        printf("scaled:\n");
+        DBGPRINT("scaled:\n");
         util::dump(tmp, tmp + 320);
 
         uint16_t tmp2[320];
         graphics::convertYCbCr2RGB565(tmp2, tmp, 320);
 
-        printf("rgb:\n");
+        DBGPRINT("rgb:\n");
         util::dumpF(tmp2, tmp2 + 320, [](int v)
-                    { printf("(%2d, %2d, %2d) ", (v >> 11) & 31, (v >> 5) & 63, v & 31); });
+                    { DBGPRINT("(%2d, %2d, %2d) ", (v >> 11) & 31, (v >> 5) & 63, v & 31); });
     }
 
+    void
+    VideoCapture::resetSignalDetection()
+    {
+        signalDetected_ = false;
+        adv7181_->clearStatusCache();
+    }
+
+    void
+    VideoCapture::initMenu(ui::Menu &menu)
+    {
+        menu.appendItem(&resampleWidth_, {512, 720}, "SAMPLE W", "Reset", {}, [&]
+                        { resampleWidth_ = 640; });
+
+        menu.appendItem(&resampleOfs_, {0, 255}, "SAMPLE OFS", "Reset", {}, [&]
+                        { resampleOfs_ = 40; });
+
+        menu.appendItem(&resamplePhaseOfs_, {0, 15}, "PHASE OFS", "Reset", {}, [&]
+                        { resamplePhaseOfs_ = 0; });
+
+        menu.appendItem(&vOfs_, {-50, 50}, "V OFFSET", "Reset", {}, [&]
+                        { vOfs_ = 0; });
+
+#ifndef NDEBUG
+        menu.appendItem(
+                &hdiv_, {848, 868}, "PLL H DIV", "Reset",
+                [&]
+                { setHDiv(hdiv_); },
+                [&]
+                { setHDiv(858); })
+            .setInsensitiveFunc([this]
+                                { return adv7181_->isSDPMode(); });
+
+        // menu.appendItem("AUTO ADJ.", "Adjust Params",
+        //                 [&]
+        //                 {
+        //                     resampleOfs_ = leftMargin_;
+        //                     resampleWidth_ = 720 - leftMargin_ - rightMargin_;
+        //                 });
+        menu.appendItem("DB CAPTIME", "Dump Cap Timing",
+                        [&]
+                        {
+                            requestLog();
+                        });
+#endif
+    }
+
+    void
+    VideoCapture::onMenuClose()
+    {
+        if (signalDetected_)
+        {
+            NVSettings::CaptureSettings s;
+            s.stdiState = currentSTDIState_;
+            s.resampleWidth = resampleWidth_;
+            s.resampleOfs = resampleOfs_;
+            s.resamplePhaseOfs = resamplePhaseOfs_;
+            s.vOfs = vOfs_;
+
+            NVSettings::instance().setCaptureSetting(s);
+        }
+    }
 }

@@ -67,12 +67,13 @@ namespace graphics
 
         void setPalette(size_t idx, uint16_t col);
         void setPalette888(size_t idx, int r, int g, int b);
+        void __not_in_flash_func(setupComposite)() const;
         void __not_in_flash_func(composite)(uint16_t *line, int y) const;
         void __not_in_flash_func(compositeChr)(uint16_t *dst, Character c, int yofs) const;
 
     private:
         Plane planes_[2];
-        uint16_t palette_[8];
+        uint32_t palette_[8];
 
         uint8_t writePlaneID_ = 0;
         uint8_t color_ = 0;

@@ -25,6 +25,7 @@ namespace device
 
             void dump() const;
             friend bool test(const STDIState &a, const STDIState &b, int cycleMarginPerLine);
+            friend bool operator==(const STDIState &, const STDIState &);
         };
 
         struct SSPDState
@@ -47,8 +48,11 @@ namespace device
         int getStatus1() const { return statusRegs_[0]; }
         int getStatus2() const { return statusRegs_[2]; }
         int getStatus3() const { return statusRegs_[3]; }
-        bool isPLLLocked() const;
-        bool isFreeRun() const;
+        bool isPLLLockedCP() const;
+        bool isFreeRunCP() const;
+        bool isPLLLockedSDP() const;
+        bool isFreeRunSDP() const;
+        bool isFreeRun() const { return isSDPMode() ? isFreeRunSDP() : isFreeRunCP(); }
 
         void clearStatusCache();
 
@@ -64,6 +68,8 @@ namespace device
         const STDIState &getSTDIState() const { return STDIState_; }
         const SSPDState &getSSPDState() const { return SSPDState_; }
 
+        bool isSDPMode() const { return input_ == SignalInput::COMPOSITE || input_ == SignalInput::S_VIDEO; }
+
     protected:
         bool sendSingleCommand(uint8_t reg, uint8_t value) const;
 
@@ -75,4 +81,5 @@ namespace device
         STDIState STDIState_;
         SSPDState SSPDState_;
     };
+
 }

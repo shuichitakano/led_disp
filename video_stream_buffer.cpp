@@ -61,7 +61,7 @@ namespace video
             writtenBufferIdxs_[writeIdx1_] = currentWriteIdx_;
             writeIdx1_ = (writeIdx1_ + 1) & (WRITE_RING_SIZE - 1);
 
-            if (nFreeBuffers_)
+            if (nFreeBuffers_ > 0)
             {
                 currentWriteIdx_ = freeBufferIdxs_[--nFreeBuffers_];
             }
