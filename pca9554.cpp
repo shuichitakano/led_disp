@@ -4,6 +4,8 @@
  */
 
 #include "pca9554.h"
+
+#include "util.h"
 #include <cassert>
 
 namespace device
@@ -17,6 +19,19 @@ namespace device
             POLARITY_INVERSION,
             CONFIGURATION,
         };
+    }
+
+    bool
+    PCA9554::init(i2c_inst_t *i2cInst, Type type, int addrSel)
+    {
+        i2c_ = i2cInst;
+        addr_ = static_cast<int>(type) | addrSel;
+
+        uint8_t rxdata{};
+        auto r = i2c_read_blocking(i2c_, addr_, &rxdata, 1, false);
+
+        DBGPRINT("PCA9554 init[%02x]: %d\n", addr_, r);
+        return r >= 0;
     }
 
     void
@@ -72,8 +87,5 @@ namespace device
 
         pca9554.output(v << 6);
     }
-
-    
-
 
 }

@@ -10,7 +10,8 @@
 #include <hardware/vreg.h>
 #include <hardware/divider.h>
 #include <hardware/i2c.h>
-#include "hardware/watchdog.h"
+#include <hardware/clocks.h>
+#include <hardware/watchdog.h>
 #include <vector>
 #include <tuple>
 #include <array>
@@ -35,6 +36,11 @@
 #include "tpa2016.h"
 #include "nv_settings.h"
 #include "app.h"
+#include "video_serializer.h"
+
+#include "ili9341.h"
+#include "parameter_communicator.h"
+#include "remote_video_capture.h"
 
 namespace
 {
@@ -42,15 +48,90 @@ namespace
 #include "test_320x240.h"
 }
 
-static constexpr bool LED_PANEL_DRIVER_DEBUG = 0; // パネル駆動だけのデバッグモード
-static constexpr bool ENABLE_VIDEO_BOARD = !LED_PANEL_DRIVER_DEBUG;
-
 #define LED_PANEL_DRIVER_TYPE_SHIFT_ONLY 0
 #define LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH 1
 
 // #define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_ONLY // V1
 #define LED_PANEL_DRIVER_TYPE LED_PANEL_DRIVER_TYPE_SHIFT_WITH_LATCH // V2
 #define BOARD_VER 3
+
+#if BOARDTYPE_SEPARATE_LED
+static constexpr bool LED_PANEL_DRIVER_DEBUG = 0; // パネル駆動だけのデバッグモード
+static constexpr bool ENABLE_LED_PANEL = true;
+static constexpr bool ENABLE_VIDEO_BOARD = false;
+
+static constexpr uint32_t PIN_VIDEO_SYNC = 1;
+static constexpr uint32_t PIN_VIDEO_IN0 = 2;
+static constexpr uint32_t PIN_VIDEO_IN0_SYNC = 5;
+static constexpr uint32_t PIN_VIDEO_IN1 = 6;
+static constexpr uint32_t PIN_VIDEO_IN1_SYNC = 9;
+
+// dummy
+static constexpr uint32_t PIN_VD0 = 6;
+#define USE_VIDEO_DESERIALIZER 1
+
+#elif BOARDTYPE_SEPARATE_VIDEO
+static constexpr bool LED_PANEL_DRIVER_DEBUG = 0; // パネル駆動だけのデバッグモード
+static constexpr bool ENABLE_VIDEO_BOARD = true;
+static constexpr bool ENABLE_LED_PANEL = false;
+
+// #define USE_LCD_PREVIEW 1
+#define USE_DATA_SERIALIZER 1
+
+// BT656
+static constexpr uint32_t PIN_VD0 = 6;
+static constexpr uint32_t PIN_VD1 = 7;
+static constexpr uint32_t PIN_VD2 = 8;
+static constexpr uint32_t PIN_VD3 = 9;
+static constexpr uint32_t PIN_VD4 = 10;
+static constexpr uint32_t PIN_VD5 = 11;
+static constexpr uint32_t PIN_VD6 = 12;
+static constexpr uint32_t PIN_VD7 = 13;
+static constexpr uint32_t PIN_VCLK = 1;
+
+static constexpr uint32_t PIN_VIDEO_BEGIN = 2;
+
+static constexpr uint32_t PIN_HSYNC = 14;
+static constexpr uint32_t PIN_VSYNC = 15;
+
+static constexpr uint32_t PIN_OUT_DATA0 = 17;
+static constexpr uint32_t PIN_OUT_DATA1 = 18;
+static constexpr uint32_t PIN_OUT_CLK = 19;
+static constexpr uint32_t PIN_OUT_SYNC = 20;
+
+static constexpr uint32_t PIN_SLAVE_SELECT = 28;
+
+#else
+// OLD, ~ MFT2023
+static constexpr bool LED_PANEL_DRIVER_DEBUG = 0; // パネル駆動だけのデバッグモード
+static constexpr bool ENABLE_VIDEO_BOARD = !LED_PANEL_DRIVER_DEBUG;
+static constexpr bool ENABLE_LED_PANEL = true;
+
+#if BOARD_VER == 3
+// BT656
+static constexpr uint32_t PIN_VD0 = 1;
+static constexpr uint32_t PIN_VD1 = 2;
+static constexpr uint32_t PIN_VD2 = 3;
+static constexpr uint32_t PIN_VD3 = 4;
+static constexpr uint32_t PIN_VD4 = 5;
+static constexpr uint32_t PIN_VD5 = 6;
+static constexpr uint32_t PIN_VD6 = 7;
+static constexpr uint32_t PIN_VD7 = 8;
+static constexpr uint32_t PIN_VCLK = 9;
+#else
+// BT656
+static constexpr uint32_t PIN_VD0 = 14;
+static constexpr uint32_t PIN_VD1 = 15;
+static constexpr uint32_t PIN_VD2 = 16;
+static constexpr uint32_t PIN_VD3 = 17;
+static constexpr uint32_t PIN_VD4 = 18;
+static constexpr uint32_t PIN_VD5 = 19;
+static constexpr uint32_t PIN_VD6 = 20;
+static constexpr uint32_t PIN_VD7 = 21;
+static constexpr uint32_t PIN_VCLK = 22;
+#endif
+
+#endif
 
 #if BOARD_VER == 3
 
@@ -75,18 +156,8 @@ static constexpr uint32_t PIN_CLK = 18;
 static constexpr uint32_t PIN_LAT = 19;
 static constexpr uint32_t PIN_OE = 28;
 
-// BT656
-static constexpr uint32_t PIN_VD0 = 1;
-static constexpr uint32_t PIN_VD1 = 2;
-static constexpr uint32_t PIN_VD2 = 3;
-static constexpr uint32_t PIN_VD3 = 4;
-static constexpr uint32_t PIN_VD4 = 5;
-static constexpr uint32_t PIN_VD5 = 6;
-static constexpr uint32_t PIN_VD6 = 7;
-static constexpr uint32_t PIN_VD7 = 8;
-static constexpr uint32_t PIN_VCLK = 9;
-
 #else
+
 // LED data
 static constexpr uint32_t PIN_R1 = 8;
 static constexpr uint32_t PIN_R2 = 9;
@@ -113,17 +184,6 @@ static constexpr uint32_t PIN_FFCLK = 3;
 static constexpr uint32_t PIN_LAT = 4;
 static constexpr uint32_t PIN_OE = 28;
 
-// BT656
-static constexpr uint32_t PIN_VD0 = 14;
-static constexpr uint32_t PIN_VD1 = 15;
-static constexpr uint32_t PIN_VD2 = 16;
-static constexpr uint32_t PIN_VD3 = 17;
-static constexpr uint32_t PIN_VD4 = 18;
-static constexpr uint32_t PIN_VD5 = 19;
-static constexpr uint32_t PIN_VD6 = 20;
-static constexpr uint32_t PIN_VD7 = 21;
-static constexpr uint32_t PIN_VCLK = 22;
-
 #endif
 
 // I2C
@@ -139,6 +199,7 @@ static constexpr int SM_DATA3 = 2;
 static constexpr int SM_COMMAND = 3;
 static constexpr int SM_PWM = 0;
 static constexpr int SM_VIDEO_IN = 1;
+static constexpr int SM_VIDEO_IN_1 = 2;
 
 static constexpr int PIOIRQ_DATAIDLE = 0;
 
@@ -244,18 +305,22 @@ void setupPIODataProgram()
 
 void initPIO()
 {
-    ofsPWM = pio_add_program(pioPWM_, &led_pwm_program);
-    ofsVideoIn = pio_add_program(pioPWM_, &capture_bt656_program);
-    // ofsData = pio_add_program(pioDataCmd_, &led_data_program);
-    // ofsCommand = pio_add_program(pioDataCmd_, &led_command_program);
+    if (ENABLE_LED_PANEL)
+    {
+        ofsPWM = pio_add_program(pioPWM_, &led_pwm_program);
+        initProgramLEDPWM(pioPWM_, SM_PWM, ofsPWM, PIN_A, PIN_OE);
+    }
 
-    initProgramLEDPWM(pioPWM_, SM_PWM, ofsPWM, PIN_A, PIN_OE);
-    initProgramCaptureBT656(pioPWM_, SM_VIDEO_IN, ofsVideoIn, PIN_VD0);
-
-    // initProgramLEDData1(pioDataCmd_, SM_DATA1, ofsData, PIN_R1, PIN_CLK, PIN_LAT);
-    // initProgramLEDData23(pioDataCmd_, SM_DATA2, ofsData, PIN_G1);
-    // initProgramLEDData23(pioDataCmd_, SM_DATA3, ofsData, PIN_B1);
-    // initProgramLEDCommand(pioDataCmd_, SM_COMMAND, ofsCommand, PIN_RGB_TOP, PIN_CLK, PIN_LAT);
+    if (ENABLE_VIDEO_BOARD)
+    {
+#if BOARDTYPE_SEPARATE_VIDEO
+        ofsVideoIn = pio_add_program(pioPWM_, &capture_bt656_ddr_hs_program);
+        initProgramCaptureBT656DDR_HS(pioPWM_, SM_VIDEO_IN, ofsVideoIn, PIN_VIDEO_BEGIN, PIN_VCLK);
+#else
+        ofsVideoIn = pio_add_program(pioPWM_, &capture_bt656_program);
+        initProgramCaptureBT656(pioPWM_, SM_VIDEO_IN, ofsVideoIn, PIN_VD0);
+#endif
+    }
 
     static constexpr int clkdiv25 = CPU_CLOCK_KHZ / 25000;
     pio_sm_set_clkdiv_int_frac(pioPWM_, SM_PWM, clkdiv25, 0);
@@ -607,8 +672,22 @@ void __not_in_flash_func(startVideoCapture)(uint32_t *dst,
     dma_channel_set_trans_count(dmaChVideoIn, transferWords, false);
     dma_channel_set_write_addr(dmaChVideoIn, dst, true);
 
+#if BOARDTYPE_SEPARATE_VIDEO
+    // pio_sm_put(pioPWM_, SM_VIDEO_IN, startCode);
+    pio_sm_put(pioPWM_, SM_VIDEO_IN, transferWords - 1);
+#else
     pio_sm_put(pioPWM_, SM_VIDEO_IN, startCode);
     pio_sm_put(pioPWM_, SM_VIDEO_IN, transferWords * 4 - 1);
+#endif
+}
+
+bool __not_in_flash_func(getVSync)()
+{
+#if BOARDTYPE_SEPARATE_VIDEO
+    return gpio_get(PIN_VSYNC);
+#else
+    return false;
+#endif
 }
 
 ////////////////////////
@@ -619,9 +698,45 @@ namespace
 {
     LEDDriver *LEDDriverInst_{};
 
-    device::ADV7181 adv7181_;
-    device::PCA9554 pca9554_;
+    struct DeviceSet
+    {
+        bool enabled = false;
+        device::ADV7181 adv7181;
+        device::PCA9554 pca9554;
+
+    public:
+        void init(bool primary)
+        {
+            enabled = adv7181.init(i2cIF, primary);
+            enabled &= pca9554.init(i2cIF, device::PCA9554::Type::C, primary ? 4 : 0);
+        }
+    };
+
+    DeviceSet deviceSet_[2];
     device::TPA2016 tpa2016_;
+
+    template <class F>
+    void callADV7181(const F &f)
+    {
+        for (auto &ds : deviceSet_)
+        {
+            if (ds.enabled)
+            {
+                f(ds.adv7181);
+            }
+        }
+    }
+    template <class F>
+    void callPCA9554(const F &f)
+    {
+        for (auto &ds : deviceSet_)
+        {
+            if (ds.enabled)
+            {
+                f(ds.pca9554);
+            }
+        }
+    }
 
     struct SpeakerSettings
     {
@@ -687,7 +802,7 @@ struct LEDDriver
     {
         LEDDriverInst_ = this;
 
-        constexpr int margin_lines = 2;
+        constexpr int margin_lines = 20;
         frameBuffer_.initialize(TOTAL_WIDTH, TOTAL_HEIGHT, margin_lines);
 
         bmp_ = (const graphics::BMP *)MagickImage;
@@ -835,7 +950,7 @@ struct LEDDriver
         auto *line2 = frameBuffer_.getLineBuffer(lineID2);
         auto *line3 = frameBuffer_.getLineBuffer(lineID3);
 
-        if (textComp)
+        if (textComp && 0)
         {
             textPlane_.setupComposite();
             textPlane_.composite(line0, y);
@@ -981,7 +1096,9 @@ struct LEDDriver
 
             auto t1 = util::getSysTickCounter24();
             auto dt10 = (t0 - t1) & 0xffffff;
-            int leftCycle = capture_.getFieldIntervalCycles() - dt10;
+            // int frameInterval = LED_PANEL_DRIVER_DEBUG ? frameTick_ : capture_.getFieldIntervalCycles();
+            int frameInterval = CPU_CLOCK_KHZ * 1000 / 60; // とりあえず固定！！
+            int leftCycle = frameInterval - dt10;
             constexpr auto cyclePWM = computeLEDPWMCycle(PWM_PULSE_PER_LINE, N_SCAN_LINES);
             auto nPWM = std::max(1, (leftCycle - (cyclePWM >> 6)) / cyclePWM); // 1/64周期マージン
             currentRefreshPerField_ = nPWM;
@@ -1028,6 +1145,8 @@ struct LEDDriver
                 plog->transfer = (lt2 - lt3) & 0xffffff;
                 ++plog;
             }
+
+            // DBGPRINT("!\n");
 
             finishLEDPWM();
             waitForScanStall();
@@ -1078,30 +1197,8 @@ struct LEDDriver
         }
     }
 
-    void __not_in_flash_func(drawStatusLine)(int fps16, int ct)
+    void __not_in_flash_func(drawStatusLine)(int fps16)
     {
-        auto s2 = adv7181_.getStatus2();
-#if 0
-        char str[41];
-        int nch = snprintf(str, sizeof(str),
-                           "F%d L%d [%d:%d][%d:%d] %d %d.%dFPS",
-                           adv7181_.isFreeRun(),
-                           adv7181_.isPLLLocked(),
-                           capture_.getLeftMargin(),
-                           capture_.getRightMargin(),
-                           capture_.getTopBound(),
-                           capture_.getBottomBound(),
-                           ct,
-                           fps16 >> 4, ((fps16 & 15) * 10) >> 4);
-        int xofs = 320 - 2 - nch * 8;
-        for (int i = 0; i < 8; ++i)
-        {
-            if (auto *p = frameBuffer_.getWritePlaneLineUnsafe(240 - 2 - 8 + i))
-            {
-                graphics::compositeFont(p, xofs, 320, i, str);
-            }
-        }
-#else
         // textPlane_.fillBlack(4, 8, 12, 6);
         textPlane_.setColor(2);
         textPlane_.setShadowColor(0);
@@ -1115,6 +1212,7 @@ struct LEDDriver
                 textPlane_.printf(40 - 8, 25, "%d.%dFPS",
                                   fps16 >> 4, ((fps16 & 15) * 10) >> 4);
             }
+#ifndef USE_VIDEO_DESERIALIZER
             if (infoMode_ >= static_cast<int>(InfoMode::ALL))
             {
                 textPlane_.printf(40 - 14, 25, "%2dRPF", currentRefreshPerField_);
@@ -1125,15 +1223,15 @@ struct LEDDriver
                     break;
 
                 case 1:
-                    textPlane_.printf(0, 24, "ST%d SS%d FR%d %d LK%d %d",
-                                      adv7181_.getSTDIState().enabled, adv7181_.getSSPDState().enabled,
-                                      adv7181_.isFreeRunCP(), adv7181_.isFreeRunSDP(),
-                                      adv7181_.isPLLLockedCP(), adv7181_.isPLLLockedSDP());
+                    // textPlane_.printf(0, 24, "ST%d SS%d FR%d %d LK%d %d",
+                    //                   adv7181_.getSTDIState().enabled, adv7181_.getSSPDState().enabled,
+                    //                   adv7181_.isFreeRunCP(), adv7181_.isFreeRunSDP(),
+                    //                   adv7181_.isPLLLockedCP(), adv7181_.isPLLLockedSDP());
                     break;
                 }
             }
-        }
 #endif
+        }
     }
 
     void __not_in_flash_func(captureDMAIRQHandler)(uint32_t time)
@@ -1160,17 +1258,50 @@ struct LEDDriver
         LEDDriverInst_->captureDMAIRQHandler(t);
     }
 
+    void __not_in_flash_func(captureVSyncIRQHandler)(bool rise, uint32_t time)
+    {
+        capture_.vsyncIRQ(rise, time);
+    }
+
+    static void __isr __not_in_flash_func(captureGPIOCallbackEntry)(uint gpio,
+                                                                    uint32_t event)
+    {
+#if USE_VSYNC_PIN
+        //        auto irq = save_and_disable_interrupts();
+
+        auto t = util::getSysTickCounter24();
+        bool rise = event & GPIO_IRQ_EDGE_RISE;
+        LEDDriverInst_->captureVSyncIRQHandler(rise, t);
+
+        gpio_set_irq_enabled(PIN_VSYNC,
+                             GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE,
+                             true);
+
+//        restore_interrupts(irq);
+#endif
+    }
+
     void setVideoCaptureIRQ()
     {
         irq_set_exclusive_handler(DMA_IRQ_1, captureDMAIRQHandlerEntry);
         irq_set_enabled(DMA_IRQ_1, true);
 
         enableVideoCaptureIRQ(false);
+
+#if USE_VSYNC_PIN
+        // VSync
+        gpio_set_irq_enabled_with_callback(PIN_VSYNC,
+                                           GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE,
+                                           true /* enable */,
+                                           captureGPIOCallbackEntry);
+        irq_set_priority(IO_IRQ_BANK0, 0);
+#endif
     }
 
     void initMenu()
     {
         static bool inputSelClose = false;
+#if 0
         static constexpr const char *inputTexts[] = {"VIDEO", "S VIDEO", "COMPONENT", "RGB"};
         menu_.appendItem(&currentInput_, "INPUT", std::begin(inputTexts), std::end(inputTexts),
                          "Select Input",
@@ -1178,12 +1309,15 @@ struct LEDDriver
                          [&]
                          {
                              auto v = static_cast<device::SignalInput>(currentInput_ + 1);
-                             adv7181_.selectInput(v);
-                             device::selectAudioInput(pca9554_, v);
-                             capture_.resetSignalDetection();
+                             callADV7181([&](auto &adv)
+                                         { adv.selectInput(v); });
+                             callPCA9554([&](auto &pca)
+                                         { selectAudioInput(pca, v); });
+                             resetSignalDetection_ = true;
                              inputSelClose = true;
                              menu_.close();
                          });
+#endif
 
         capture_.initMenu(menu_);
 
@@ -1213,7 +1347,7 @@ struct LEDDriver
 
         infoMode_ = NVSettings::instance().getState().infoMode;
 
-#ifndef NDEBUG
+#if !defined(NDEBUG) && 0
         menu_.appendItem("DUMP FB", "Dump FrameBuffer",
                          [&]
                          { frameBuffer_.requestDump(); });
@@ -1228,118 +1362,51 @@ struct LEDDriver
                             nvs.setSpeakerGain(speakerSettings_.gainDB);
                             nvs.setLatestInput(static_cast<device::SignalInput>(currentInput_));
                             nvs.setInfoMode(infoMode_);
-                            if (!inputSelClose)
-                            {
-                                capture_.onMenuClose();
-                            }
+                            // if (!inputSelClose)
+                            // {
+                            //     capture_.onMenuClose();
+                            // }
                             inputSelClose = false;
                             nvs.flash(); });
     }
 
-    void __not_in_flash_func(mainProc)()
+    int frameTick_ = 1;
+    bool resetSignalDetection_ = true;
+
+    //////////////////////////
+    //////////////////////////
+    void __not_in_flash_func(mainProcFixImage)()
     {
-        capture_.setADV7181(&adv7181_);
-
-        initMenu();
-        setVideoCaptureIRQ();
-
         int yofs = 0;
         auto prevTick = util::getSysTickCounter24();
-
-        int prevButtons = 0xf;
-
-        //        watchdog_enable(5000, true);
 
         while (true)
         {
             watchdog_update();
 
             textPlane_.clear();
-            //            printf("%d\n", yofs);
-            if (!LED_PANEL_DRIVER_DEBUG)
+            auto w = bmp_->getWidth();
+            auto h = bmp_->getHeight();
+            auto *img = (uint8_t *)bmp_->getBits() + 3 * w * (h - 1);
+            int stride = -w * 3;
+
+            for (int y = 0; y < 240; ++y)
             {
-                auto curButtons = pca9554_.input();
-                menu_.update(curButtons);
-
-#if 0
-                // printf("bt %d\n", curButtons);
-                if (device::isButtonEdge(curButtons, prevButtons, device::Button::CENTER))
-                {
-                    printf("scan\n");
-                    capture_.resetSignalDetection();
-                    adv7181_.clearStatusCache();
-                }
-
-                if (device::isButtonEdge(curButtons, prevButtons, device::Button::LEFT))
-                {
-                    capture_.setHDiv(capture_.getHDiv() - 1, adv7181_);
-                }
-                else if (device::isButtonEdge(curButtons, prevButtons, device::Button::RIGHT))
-                {
-                    capture_.setHDiv(capture_.getHDiv() + 1, adv7181_);
-                }
-                if (device::isButtonEdge(curButtons, prevButtons, device::Button::DOWN))
-                {
-                    capture_.requestDumpLine(cursorLine);
-                }
-                if (device::isButtonEdge(curButtons, prevButtons, device::Button::UP))
-                {
-                    capture_.requestLog();
-                }
-#endif
-
-                prevButtons = curButtons;
-
-                if (!capture_.tick(frameBuffer_))
-                {
-                    continue;
-                }
-            }
-            else
-            {
-                auto w = bmp_->getWidth();
-                auto h = bmp_->getHeight();
-                auto *img = (uint8_t *)bmp_->getBits() + 3 * w * (h - 1);
-                int stride = -w * 3;
-
-                for (int y = 0; y < 240; ++y)
-                {
-                    int lineID = frameBuffer_.allocateLine();
-                    auto p = frameBuffer_.getLineBuffer(lineID);
-#if 1
-#if 1
-                    graphics::convertBGRB888toBGR565(p, img + stride * ((y + yofs) % h), w);
-#elif 1
-                    int y2 = (y + yofs) % 240;
-                    if (y2 < h)
-                    {
-                        memset(p, 0, 160 * 2);
-                        graphics::convertBGRB888toBGR565(p + 160, img + stride * y2, w);
-                    }
-                    else
-                    {
-                        memset(p, 0, 320 * 2);
-                    }
-#else
-                    graphics::convertBGRB888toBGR565(p, img + stride * ((y + yofs) % h), w);
-                    graphics::convertBGRB888toBGR565(p + 160, img + stride * ((y + yofs) % h), w);
-#endif
-#endif
-
-                    frameBuffer_.commitNextLine(lineID);
-                }
+                int lineID = frameBuffer_.allocateLine();
+                auto p = frameBuffer_.getLineBuffer(lineID);
+                graphics::convertBGRB888toBGR565(p, img + stride * ((y + yofs) % h), w);
+                frameBuffer_.commitNextLine(lineID);
             }
 
             auto curTick = util::getSysTickCounter24();
             auto frameTick = (prevTick - curTick) & 0xffffff;
+            frameTick_ = frameTick;
             auto fps16 = hw_divider_u32_quotient_inlined(CPU_CLOCK_KHZ * 1000 * 16, frameTick);
             prevTick = curTick;
 
-            //            printf("%d %d\n", fps16 >> 4, yofs);
+            // printf("%d %d\n", fps16 >> 4, yofs);
 
-            // drawStatusLine(fps16, cursorLine);
-            // drawStatusLine(fps16, currentRefreshPerField_);
-            drawStatusLine(fps16, capture_.getHDiv());
+            drawStatusLine(fps16);
             menu_.render(textPlane_);
 
             textPlane_.flip();
@@ -1349,6 +1416,189 @@ struct LEDDriver
             ++yofs;
         }
     }
+
+    //////////////////////////
+    //////////////////////////
+    void __not_in_flash_func(mainProcVideoCapture)()
+    {
+        initMenu();
+        MasterParameterCommunicator mpc;
+        mpc.init(i2cIF);
+
+        video::MasterVideoCaptureHandler mvch(&capture_);
+        video::RemoteVideoCaptureHandler rvch(&mpc);
+
+        video::VideoCaptureController captureControllers[2];
+        captureControllers[0].setADV7181(&deviceSet_[0].adv7181);
+        captureControllers[0].setHandler(&mvch);
+        captureControllers[0].setID(0);
+
+        captureControllers[1].setADV7181(&deviceSet_[1].adv7181);
+        captureControllers[1].setHandler(&rvch);
+        captureControllers[1].setID(1);
+
+        int nCaptures = deviceSet_[1].enabled ? 2 : 1;
+        DBGPRINT("nCaptures=%d\n", nCaptures);
+
+        capture_.setFrameBuffer(&frameBuffer_);
+        capture_.setTextPlane(&textPlane_);
+        setVideoCaptureIRQ();
+
+        capture_.setResampleParams(648, 0, 55, 0);
+
+        auto prevTick = util::getSysTickCounter24();
+
+        watchdog_enable(5000, true);
+
+        bool ledState = true;
+
+        while (true)
+        {
+            watchdog_update();
+
+            textPlane_.clear();
+            gpio_put(PICO_DEFAULT_LED_PIN, ledState & 1);
+            ledState ^= true;
+
+            auto curButtons = deviceSet_[0].pca9554.input();
+            menu_.update(curButtons);
+
+            for (int i = 0; i < nCaptures; ++i)
+            {
+                if (resetSignalDetection_)
+                {
+                    captureControllers[i].resetSignalDetection();
+                    resetSignalDetection_ = false;
+                }
+                captureControllers[i].tick();
+            }
+            for (int i = 0; i < nCaptures; ++i)
+            {
+                captureControllers[i].wait();
+            }
+
+            auto curTick = util::getSysTickCounter24();
+            auto frameTick = (prevTick - curTick) & 0xffffff;
+            frameTick_ = frameTick;
+            auto fps16 = hw_divider_u32_quotient_inlined(CPU_CLOCK_KHZ * 1000 * 16, frameTick);
+            prevTick = curTick;
+
+            // printf("%d %d\n", fps16 >> 4, yofs);
+
+            drawStatusLine(fps16);
+            menu_.render(textPlane_);
+
+            textPlane_.flip();
+            frameBuffer_.finishPlane();
+            // printf("y=%d\n", yofs);
+        }
+    }
+
+    void __not_in_flash_func(mainProcSlaveCapture)()
+    {
+        capture_.setFrameBuffer(&frameBuffer_);
+        setVideoCaptureIRQ();
+
+        capture_.setResampleParams(648, 0, 53, 0);
+
+        video::RemoteVideoCaptureManager capManager(&capture_);
+        capManager.setAfterCaptureFunc([&]
+                                       {
+                                           textPlane_.flip();
+                                           frameBuffer_.finishPlane();
+                                           textPlane_.clear();
+                                           watchdog_update(); });
+
+        SlaveParameterCommunicator spc;
+        spc.setRemoteVideoCaptureManager(&capManager);
+        spc.init(i2cIF, getI2CSlaveAddress(I2CTargetType::VIDEO_BOARD_SLAVE), PIN_SDA, PIN_SCL);
+
+        capManager.loop();
+    }
+
+#if USE_VIDEO_DESERIALIZER
+    void __not_in_flash_func(mainProcDeserialize)()
+    {
+        initializeDeserializerProgram(pioPWM_);
+
+        VideoDeserializer deserializer;
+        deserializer.init(SM_VIDEO_IN, PIN_VIDEO_IN0);
+
+        deserializer.setOffset(-32);
+
+        auto prevTick = util::getSysTickCounter24();
+
+        while (true)
+        {
+            watchdog_update();
+            deserializer.startReceive(&frameBuffer_);
+            deserializer.waitTransfer();
+
+            auto curTick = util::getSysTickCounter24();
+            frameTick_ = (prevTick - curTick) & 0xffffff;
+            prevTick = curTick;
+
+            frameBuffer_.finishPlane();
+        }
+    }
+
+    void __not_in_flash_func(mainProcDualDeserialize)()
+    {
+        initializeDeserializerProgram(pioPWM_);
+
+        LineCompositor compositor(&frameBuffer_);
+#if 0
+        compositor.setLineInfo(false, 320 - 80, 0, 80);
+        compositor.setLineInfo(true, 0, 80, 320 - 80);
+#else
+        compositor.setLineInfo(true, 0, 0, 288);
+        compositor.setLineInfo(false, 0, 288, 32);
+#endif
+
+        VideoDeserializer2 deserializers[2]{{&compositor, false}, {&compositor, true}};
+        deserializers[0].init(SM_VIDEO_IN, PIN_VIDEO_IN0, 0);
+        deserializers[1].init(SM_VIDEO_IN_1, PIN_VIDEO_IN1, 1);
+
+        auto prevTick = util::getSysTickCounter24();
+
+        while (true)
+        {
+            watchdog_update();
+
+            compositor.clear();
+
+            for (auto &deserializer : deserializers)
+            {
+                deserializer.startReceive(&frameBuffer_);
+            }
+            for (auto &deserializer : deserializers)
+            {
+                deserializer.waitTransfer();
+            }
+
+            compositor.finish();
+
+            auto curTick = util::getSysTickCounter24();
+            frameTick_ = (prevTick - curTick) & 0xffffff;
+            prevTick = curTick;
+
+            auto fps16 = hw_divider_u32_quotient_inlined(CPU_CLOCK_KHZ * 1000 * 16, frameTick_);
+            // DBGPRINT("%d.%d\n", fps16 >> 4, (fps16 & 15) * 10);
+
+            auto tt0 = util::getSysTickCounter24();
+            frameBuffer_.finishPlane();
+            auto tt1 = util::getSysTickCounter24();
+
+#if 0
+            static int ct = 100;
+            if (--ct == 0)
+            {
+                DBGPRINT("finishPlane %d\n", (tt0 - tt1) & 0xffffff);
+            }
+#endif
+        }
+    }
+#endif // USE_VIDEO_DESERIALIZER
 };
 
 ////////////////////////
@@ -1372,6 +1622,40 @@ void __not_in_flash_func(core1_main)()
     driver_.loop();
 }
 
+void __not_in_flash_func(loopLCDPreview)()
+{
+    util::initSysTick();
+
+    device::initLCD();
+
+    gpio_init(28);
+    gpio_set_dir(28, GPIO_OUT);
+
+    while (1)
+    {
+        auto t0 = util::getSysTickCounter24();
+        device::drawLCD(driver_.frameBuffer_);
+        auto t1 = util::getSysTickCounter24();
+        auto dt = (t0 - t1) & 0xffffff;
+        // printf("dt %d\n", dt);
+    }
+}
+
+#if USE_DATA_SERIALIZER
+void __not_in_flash_func(loopDataSerializer)()
+{
+    util::initSysTick();
+
+    VideoSerializer serializer;
+    serializer.init(pio0_hw, 0, PIN_OUT_DATA0, PIN_OUT_CLK, PIN_OUT_SYNC);
+
+    while (1)
+    {
+        serializer.sendFrame(driver_.frameBuffer_);
+    }
+}
+#endif
+
 struct Test
 {
     int v;
@@ -1388,8 +1672,26 @@ struct Test
 
 Test test_;
 
+void initBoard()
+{
+#if BOARDTYPE_SEPARATE_VIDEO
+    gpio_init(PIN_VSYNC);
+    gpio_set_dir(PIN_VSYNC, GPIO_IN);
+#endif
+}
+
 int main()
 {
+#if 0
+    // vreg_set_voltage(VREG_VOLTAGE_1_20);
+    // sleep_ms(10);
+    // set_sys_clock_khz(252000UL, true);
+
+    stdio_init_all();
+    device::testLCD();
+    return 0;
+#endif
+
     vreg_set_voltage(VREG_VOLTAGE_1_20);
     sleep_ms(10);
     set_sys_clock_khz(CPU_CLOCK_KHZ, true);
@@ -1405,22 +1707,105 @@ int main()
 
     printf("\n\nstart.\n");
 
-    NVSettings::instance().load();
+    // NVSettings::instance().load();
     graphics::initImageProcessor();
 
+    initBoard();
     initPIO();
     initDMA();
 
-    // i2c
-    i2c_init(i2cIF, 400000);
-    gpio_set_function(PIN_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(PIN_SCL, GPIO_FUNC_I2C);
+#if BOARDTYPE_SEPARATE_VIDEO
+    // Video board
+    gpio_init(PIN_SLAVE_SELECT);
+    gpio_set_dir(PIN_SLAVE_SELECT, GPIO_IN);
+    gpio_pull_up(PIN_SLAVE_SELECT);
+    sleep_ms(1);
+    bool isVideoMaster = gpio_get(PIN_SLAVE_SELECT);
+    DBGPRINT("Video Master : %d\n", isVideoMaster);
 
-    if (ENABLE_VIDEO_BOARD)
+    I2CTargetType i2cTargetType = isVideoMaster ? I2CTargetType::VIDEO_BOARD_MASTER : I2CTargetType::VIDEO_BOARD_SLAVE;
+
+    gpio_init(PIN_OUT_SYNC);
+    gpio_set_dir(PIN_OUT_SYNC, GPIO_OUT);
+    gpio_put(PIN_OUT_SYNC, 1);
+
+#else
+    bool isVideoMaster = ENABLE_VIDEO_BOARD;
+
+#if BOARDTYPE_SEPARATE_LED
+    // LED board
+
+    gpio_init(PIN_VIDEO_IN0_SYNC);
+    gpio_set_dir(PIN_VIDEO_IN0_SYNC, GPIO_IN);
+
+    DBGPRINT("Wait for Video Sync 0...\n");
+    while (!gpio_get(PIN_VIDEO_IN0_SYNC))
     {
-        adv7181_.init(i2cIF);
-        pca9554_.init(i2cIF, device::PCA9554::Type::C);
+        sleep_ms(1);
+    }
+    DBGPRINT("Video Sync 0 detected.\n");
+
+    gpio_init(PIN_VIDEO_IN1_SYNC);
+    gpio_set_dir(PIN_VIDEO_IN1_SYNC, GPIO_IN);
+    gpio_pull_down(PIN_VIDEO_IN1_SYNC);
+
+    DBGPRINT("Check for Video Sync 1...\n");
+    auto rightDetected = []
+    {
+        for (int i = 0; i < 1000; ++i)
+        {
+            if (gpio_get(PIN_VIDEO_IN1_SYNC))
+            {
+                DBGPRINT("Video Sync 1 detected.\n");
+                return true;
+            }
+            sleep_ms(1);
+        }
+        return false;
+    }();
+    DBGPRINT("Right LED = %d\n", rightDetected);
+
+    I2CTargetType i2cTargetType =
+        rightDetected ? I2CTargetType::LED_PANEL_DRIVER_RIGHT : I2CTargetType::LED_PANEL_DRIVER_LEFT;
+#else
+    I2CTargetType i2cTargetType = I2CTargetType::VIDEO_BOARD_MASTER;
+#endif
+#endif
+
+    if (isVideoMaster)
+    {
+        // i2c
+        i2c_init(i2cIF, 400000);
+        gpio_set_function(PIN_SDA, GPIO_FUNC_I2C);
+        gpio_set_function(PIN_SCL, GPIO_FUNC_I2C);
+
+#if 0
+        for (int addr = 0; addr < (1 << 7); ++addr)
+        {
+            if ((addr & 0x78) == 0 || (addr & 0x78) == 0x78)
+            {
+                continue;
+            }
+            uint8_t rxdata;
+            auto r = i2c_read_blocking(i2cIF, addr, &rxdata, 1, false);
+            if (r >= 0)
+            {
+                DBGPRINT("I2C Device Found : %02x\n", addr);
+            }
+        }
+#endif
+        deviceSet_[0].init(true);
+        deviceSet_[1].init(false);
         tpa2016_.init(i2cIF);
+
+        if (deviceSet_[1].enabled)
+        {
+            MasterParameterCommunicator mpc;
+            mpc.init(i2cIF);
+
+            DBGPRINT("Request Reset SlaveVideo\n");
+            mpc.requestReset(I2CTargetType::VIDEO_BOARD_SLAVE);
+        }
     }
 
     gpio_put(LED_PIN, 1);
@@ -1428,20 +1813,25 @@ int main()
     driver_.init();
 
 #if 0
+    sleep_ms(1000);
+    adv7181_.selectInput(device::SignalInput::COMPONENT);
+
     driver_.capture_.simpleCaptureTest();
     while (1)
         ;
 #endif
 
-    if (ENABLE_VIDEO_BOARD)
+    if (isVideoMaster)
     {
-        pca9554_.setPortDir(0b00111111);
+        callPCA9554([](auto &pca9554_)
+                    { pca9554_.setPortDir(0b00111111); });
 
-        auto defaultInput = device::SignalInput::COMPOSITE;
-        // auto defaultInput = device::SignalInput::RGB21;
+        // auto defaultInput = device::SignalInput::COMPOSITE;
+        auto defaultInput = device::SignalInput::RGB21;
         // auto defaultInput = device::SignalInput::COMPONENT;
-        adv7181_.selectInput(defaultInput);
-        device::selectAudioInput(pca9554_, defaultInput);
+        callADV7181([&](auto &adv7181_)
+                    { adv7181_.selectInput(defaultInput); });
+        device::selectAudioInput(deviceSet_[0].pca9554, defaultInput);
 
         // adv7181_.setPLL(true, false, 900, 15980);
 
@@ -1452,7 +1842,42 @@ int main()
         }
     }
 
-    multicore_launch_core1(core1_main);
-    driver_.mainProc();
+    if (ENABLE_LED_PANEL)
+    {
+        multicore_launch_core1(core1_main);
+    }
+
+#if USE_LCD_PREVIEW
+    {
+        multicore_launch_core1(loopLCDPreview);
+    }
+#endif
+
+#if USE_DATA_SERIALIZER
+    {
+        multicore_launch_core1(loopDataSerializer);
+    }
+#endif
+
+#if USE_VIDEO_DESERIALIZER
+    if (rightDetected)
+    {
+        driver_.mainProcDualDeserialize();
+    }
+    else
+    {
+        driver_.mainProcDeserialize();
+    }
+#else
+
+#if BOARDTYPE_SEPARATE_VIDEO
+    if (!isVideoMaster)
+    {
+        driver_.mainProcSlaveCapture();
+    }
+#endif
+
+    driver_.mainProcVideoCapture();
+#endif
     return 0;
 }

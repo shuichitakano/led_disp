@@ -201,25 +201,200 @@ namespace
         {},
     };
 
-    static constexpr int I2CADDR_CTRL = 0x42 >> 1;
-    static constexpr int I2CADDR_VBI = 0x23 >> 1;
+    //////////////////////////////////////////////////////////////////////////
+    //    ##CP YPrPb 525i & 625i##
+    //: 525I YPrPb In 12Bit RGB DDR:
+    static constexpr std::array<uint8_t, 2> i2cDataComponentDDR_[] = {
+        {0x05, 0x01}, // PRIM_MODE = 001b COMP
+        {0x06, 0x00}, // VID_STD for 525i (1440x525)
+        {0x1D, 0x47}, // Enable 28.63636MHz crystal
+        {0x3A, 0x11}, // Set Latch Clock 01b. Power down ADC3.
+        {0x3B, 0x81}, // Enable Internal Bias
+        {0x3C, 0x53}, // PLL QPUMP to 011b
+        // 　{0x3C, 0x52}, // PLL QPUMP to 010b
+        {0x6B, 0x84}, // Enable DE output, 12-bit DDR
+                      //{0x7B, 0x06}, // clears the bits CP_DUP_AV and AV_Blank_EN
+                      //{0x7B, 0x16}, // AV_Blank_EN, CP_DUP_AV
+        // {0x7B, 0x1D}, // Turn off EAV and SAV Codes. Set BLANK_RGB_SEL.
+        {0x7B, 0x3D}, // Turn off EAV and SAV Codes. Set BLANK_RGB_SEL. + INTLCD_240P_540P
+        {0x85, 0x19}, // Turn off SSPD and force SOY
+        {0x86, 0x0B}, // Enable STDI Line Count Mode
+        {0xC9, 0x08}, // Enable DDR
+        // {0xC9, 0x0C}, // Enable DDR / Red first
+        {0xF3, 0x01}, // Enable Anti Alias Filter on ADC 0
+        {0xC3, 0x31}, // ADC1 to Ain5 (Pr), ADC0 to Ain2 (Y),
+        {0xC4, 0xb2}, // ADC2 to Ain3 (Pb) and enables manual override of mux, SOY
+
+        {0xB7, 0x1B}, // ADI Recommended ??
+        {0x0E, 0x80}, // ADI recommended sequence
+        {0x52, 0x46}, // ADI recommended sequence
+        {0x54, 0x80}, // ADI Recommended Setting
+        {0xF6, 0x3B}, // ADI Recommended Setting
+        {0x0E, 0x00}, // ADI recommended sequence
+
+#if 1
+        {0x52, 0x04}, // Setup reg 52 to 66 in CSC for RGB color space, ChA
+        {0x53, 0x00}, // CSC Register ChA
+        {0x54, 0x78}, // CSC Register ChA
+        {0x55, 0x23}, // CSC Register ChA
+        {0x56, 0x8C}, // CSC Register ChA
+        {0x57, 0xC5}, // CSC Register ChA
+        {0x58, 0xBB}, // CSC Register ChA
+        {0x59, 0x00}, // CSC Register ChB
+        {0x5A, 0x00}, // CSC Register ChB
+        {0x5B, 0x00}, // CSC Register ChB
+        {0x5C, 0x01}, // CSC Register ChB
+        {0x5D, 0x05}, // CSC Register ChB
+        {0x5E, 0x25}, // CSC Register ChB
+        {0x5F, 0xDB}, // CSC Register ChB
+        {0x60, 0x00}, // CSC Register ChC
+        {0x61, 0x00}, // CSC Register ChC
+        {0x62, 0x28}, // CSC Register ChC
+        {0x63, 0x94}, // CSC Register ChC
+        {0x64, 0x00}, // CSC Register ChC
+        {0x65, 0x05}, // CSC Register ChC
+        {0x66, 0xDB}, // CSC Register ChC
+#endif
+
+        {0xF4, 0x3B}, // Set drive strength
+        {0x73, 0xF0}, // Enable Manual Gain and set CH_A gain
+        {0x74, 0x0C}, // Set CH_A and CH_B Gain
+        {0x75, 0x03}, // Set CH_B and CH_C Gain
+        {0x76, 0x00}, // Set CH_C Gain
+        {0x77, 0x04}, // Set offset to 64d
+        {0x78, 0x01}, // Set offset to 64d
+        {0x79, 0x00}, // Set offset to 64d
+        {0x7A, 0x40}, // Set offset to 64d
+        {},
+    };
+
+    // ##CP RGB SOG 525i & 625i##
+    // :525I RGB SOG In 8Bit 422 EAV/SAV out Encoder:
+    static constexpr std::array<uint8_t, 2> i2cDataRGB_CP_DDR_[] = {
+        {0x05, 0x01}, // PRIM_MODE = 001b COMP
+        // {0x05, 0x02}, // PRIM_MODE = 010b GR
+        {0x06, 0x00}, // VID_STD for 525i (1440x525)
+        {0x1D, 0x47}, // Enable 28MHz Crystal
+        {0x3A, 0x11}, // Set Latch Clock 01b, Power Down ADC3
+        {0x3B, 0x81}, // Enable internal Bias
+        {0x3C, 0x52}, // PLL_QPUMP to 010b
+                      //{0x3C, 0x32}, // PLL_QPUMP to 010b, sync lv 56.25mv
+        {0x6B, 0x84}, // Enable DE output, 12-bit DDR
+        {0x7B, 0x3D}, // Turn off EAV and SAV Codes. Set BLANK_RGB_SEL. + INTLCD_240P_540P
+        {0x85, 0x19}, // Turn off SSPD and force SOY.
+        //{0x85, 0x11}, // Turn off SSPD and force CSync.
+        //{0x85, 0x91}, // Turn off SSPD and force CSync, neg pol.
+        //{0x85, 0xb1}, // Turn off SSPD and force CSync, pos pol.
+        //{0x85, 0x02}, // Turn on SSPD.
+        {0x86, 0x0B}, // Enable stdi_line_count_mode
+        {0xC9, 0x08}, // Enable DDR Mode
+        //{0xF3, 0x07}, // Enable Anti Alias Filter on ADC 0,1,2
+        {0xF3, 0x00}, // Disable Anti Alias Filter
+        {0xC3, 0x56}, // ADC1 to Ain8 (Pr), ADC0 to Ain10 (Y),
+        {0xC4, 0xF4}, // ADC2 to Ain6 (Pb) and enables manual override of mux, SOG
+
+        {0x0E, 0x80}, // ADI Recommended Setting
+        {0x52, 0x46}, // ADI Recommended Setting
+        {0x54, 0x80}, // ADI Recommended Setting
+        {0xF6, 0x3B}, // ADI Recommended Setting
+        {0x0E, 0x00}, // ADI Recommended Setting
+
+#if 0
+        {0x52, 0x00}, // Colour Space Conversion from RGB->YCrCb
+        {0x53, 0x00}, // CSC
+        {0x54, 0x12}, // CSC
+        {0x55, 0x90}, // CSC
+        {0x56, 0x38}, // CSC
+        {0x57, 0x69}, // CSC
+        {0x58, 0x48}, // CSC
+        {0x59, 0x08}, // CSC
+        {0x5A, 0x00}, // CSC
+        {0x5B, 0x75}, // CSC
+        {0x5C, 0x21}, // CSC
+        {0x5D, 0x00}, // CSC
+        {0x5E, 0x1A}, // CSC
+        {0x5F, 0xB8}, // CSC
+        {0x60, 0x08}, // CSC
+        {0x61, 0x00}, // CSC
+        {0x62, 0x20}, // CSC
+        {0x63, 0x03}, // CSC
+        {0x64, 0xD7}, // CSC
+        {0x65, 0x19}, // CSC
+        {0x66, 0x48}, // CSC last
+#endif
+
+#if 0
+        {0x6c, 0b10000000}, // disable clamp
+        {0x6d, 0},
+        {0x6e, 0},
+        {0x6f, 0},
+        {0x70, 0},
+#endif
+
+        {0x71, 0xff}, // agc
+
+        {0x73, 0xCF}, // Enable Manual Gain and set CH_A gain
+        {0x74, 0xA3}, // Set CH_A and CH_B Gain - 0FAh
+        {0x75, 0xE8}, // Set CH_B and CH_C Gain
+        {0x76, 0xFA}, // Set CH_C Gain
+        {0x77, 0x00}, // Set offset to 0
+        {0x78, 0x00}, // Set offset to 0
+        {0x79, 0x00}, // Set offset to 0
+        {0x7A, 0x00}, // Set offset to 0
+
+        {0x67, 0x13}, // DPP Filters
+        {0x8F, 0x77}, // FR_LL to 1820 & Enable 28.63MHz LLC
+        {0x90, 0x1C}, // FR_LL to 1820
+        {0xBF, 0x06}, // Blue Screen Free Run Colour
+        //{0xBF, 0x00}, // Blue Screen Free Run Colour
+        {0xC0, 0x40}, // default color
+        {0xC1, 0xF0}, // default color
+        {0xC2, 0x80}, // Default color
+        {0xC5, 0x01}, // CP_CLAMP_AVG_FACTOR[1-0] = 00b
+
+        {0x69, 0x40}, // 1.0v sync
+        {0xb3, 0x51}, // free run th
+        //{0xf4, 0x2a}, // drive strength
+
+        {},
+    };
+
+    //
+
 }
 
 namespace device
 {
+    bool
+    ADV7181::init(i2c_inst_t *i2cInst, bool primary)
+    {
+        i2c_ = i2cInst;
+        addr_ = primary ? 0x21 : 0x20;
+
+#if 0
+        uint8_t rxdata{};
+        auto r = i2c_read_blocking(i2c_, addr_, &rxdata, 1, false);
+        DBGPRINT("ADV7181 init[%s]: %d\n", primary ? "primary" : "secondary", r);
+        // 応答しない
+        return r >= 0;
+#else
+        return true;
+#endif
+    }
+
     void
     ADV7181::reset() const
     {
         assert(i2c_);
         static constexpr std::array<uint8_t, 2> data = {0x0f, 0x80};
-        auto r = i2c_write_blocking(i2c_, I2CADDR_CTRL, data.data(), data.size(), false);
+        auto r = i2c_write_blocking(i2c_, addr_, data.data(), data.size(), false);
         assert(r >= 0);
 
         sleep_ms(5);
 
         // どうもリセット後の最初のコマンドは失敗するようなので適当な書き込みしておく
         uint8_t reg_st = 0x10;
-        i2c_write_timeout_us(i2c_, I2CADDR_CTRL, &reg_st, 1, false, 1000);
+        i2c_write_timeout_us(i2c_, addr_, &reg_st, 1, false, 1000);
     }
 
     void
@@ -245,11 +420,13 @@ namespace device
 
             case SignalInput::COMPONENT:
                 printf("Component\n");
-                return i2cDataComponentCP_;
+                // return i2cDataComponentCP_;
+                return i2cDataComponentDDR_;
 
             case SignalInput::RGB21:
                 printf("RGB\n");
-                return i2cDataRGB_CP_;
+                // return i2cDataRGB_CP_;
+                return i2cDataRGB_CP_DDR_;
             };
             return {};
         }();
@@ -269,7 +446,7 @@ namespace device
                 {
                     break;
                 }
-                auto r = i2c_write_blocking(i2c_, I2CADDR_CTRL, data.data(), data.size(), false);
+                auto r = i2c_write_blocking(i2c_, addr_, data.data(), data.size(), false);
                 // printf("r = %d [%02x %02x]\n", r, data[0], data[1]);
                 assert(r >= 0);
                 sendCount += r;
@@ -286,7 +463,7 @@ namespace device
     bool ADV7181::sendSingleCommand(uint8_t reg, uint8_t value) const
     {
         uint8_t data[] = {reg, value};
-        return i2c_write_blocking(i2c_, I2CADDR_CTRL, data, 2, false) == 2;
+        return i2c_write_blocking(i2c_, addr_, data, 2, false) == 2;
     }
 
     void ADV7181::startSTDILineCountMode() const
@@ -308,6 +485,25 @@ namespace device
     void ADV7181::setRGBSyncModeCSync(bool f) const
     {
         sendSingleCommand(0x85, f ? 0x11 : 0x19);
+    }
+
+    // gain を 10bitで設定(512が1倍)
+    void ADV7181::setChGain(bool manual, int chA, int chB, int chC) const
+    {
+        // sendSingleCommand(0x71, 0xff);
+        sendSingleCommand(0x73, (manual ? 0xc0 : 0) | (chA >> 4));
+        sendSingleCommand(0x74, (chA << 4) | (chB >> 6));
+        sendSingleCommand(0x75, (chB << 2) | (chC >> 8));
+        sendSingleCommand(0x76, chC);
+    }
+
+    // offset を 10bit で設定
+    void ADV7181::setChOffset(int chA, int chB, int chC) const
+    {
+        sendSingleCommand(0x77, (chA >> 4));
+        sendSingleCommand(0x78, (chA << 4) | (chB >> 6));
+        sendSingleCommand(0x79, (chB << 2) | (chC >> 8));
+        sendSingleCommand(0x7a, chC);
     }
 
     bool ADV7181::isPLLLockedCP() const
@@ -394,15 +590,15 @@ namespace device
         {
             uint8_t reg = 0x10;
             // uint8_t reg = 0xb5;
-            i2c_write_blocking(i2c_, I2CADDR_CTRL, &reg, 1, true);
-            i2c_read_blocking(i2c_, I2CADDR_CTRL, statusRegs_, 4, false);
+            i2c_write_blocking(i2c_, addr_, &reg, 1, true);
+            i2c_read_blocking(i2c_, addr_, statusRegs_, 4, false);
         }
         {
             {
                 uint8_t reg = 0xb1;
                 uint8_t buf[5];
-                i2c_write_blocking(i2c_, I2CADDR_CTRL, &reg, 1, true);
-                i2c_read_blocking(i2c_, I2CADDR_CTRL, buf, 5, false);
+                i2c_write_blocking(i2c_, addr_, &reg, 1, true);
+                i2c_read_blocking(i2c_, addr_, buf, 5, false);
 
                 {
                     auto &s = STDIState_;
@@ -424,8 +620,8 @@ namespace device
             {
                 uint8_t reg = 0xca;
                 uint8_t buf[2];
-                i2c_write_blocking(i2c_, I2CADDR_CTRL, &reg, 1, true);
-                i2c_read_blocking(i2c_, I2CADDR_CTRL, buf, 2, false);
+                i2c_write_blocking(i2c_, addr_, &reg, 1, true);
+                i2c_read_blocking(i2c_, addr_, buf, 2, false);
                 STDIState_.nCyclesInField_256 = ((buf[0] & 0x1f) << 8) + buf[1];
             }
         }

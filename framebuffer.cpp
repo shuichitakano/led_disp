@@ -9,6 +9,7 @@
 #include <mutex>
 #include <assert.h>
 #include <numeric>
+#include <cstring>
 
 namespace graphics
 {
@@ -75,6 +76,19 @@ namespace graphics
             getWritePlane().push_back(lineID);
         }
         __sev();
+    }
+
+    void
+    FrameBuffer::fillBlackPlane()
+    {
+        auto &wp = getWritePlane();
+        while (wp.size() < height_)
+        {
+            int lineID = allocateLine();
+            auto p = getLineBuffer(lineID);
+            memset(p, 0, width_ * 2);
+            commitNextLine(lineID);
+        }
     }
 
     uint16_t *

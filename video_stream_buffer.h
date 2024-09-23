@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <array>
 #include <tuple>
+#include <vector>
 #include "spinlock.h"
 
 namespace video
@@ -14,9 +15,14 @@ namespace video
     class VideoStreamBuffer
     {
     public:
+        static constexpr uint32_t WRITE_RING_SIZE = 32; // 2のベキ
+#if BOARDTYPE_SEPARATE_VIDEO
+        static constexpr uint32_t UNIT_BUFFER_SIZE = 1600;
+        static constexpr uint32_t N_BUFFERS = 4;
+#else
         static constexpr uint32_t UNIT_BUFFER_SIZE = 512; // 1024pix
-        static constexpr uint32_t WRITE_RING_SIZE = 32;   // 2のベキ
         static constexpr uint32_t N_BUFFERS = 18;
+#endif
         static constexpr uint32_t TOTAL_BUFFER_SIZE = UNIT_BUFFER_SIZE * N_BUFFERS;
 
         static_assert(N_BUFFERS <= WRITE_RING_SIZE);

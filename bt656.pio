@@ -39,12 +39,99 @@ initProgramCaptureBT656(PIO pio, uint sm, uint offset, uint pinIN)
 {
     pio_sm_set_consecutive_pindirs(pio, sm, pinIN, 9, false);
 
-    pio_gpio_init(pio, pinIN + 0);
-    pio_gpio_init(pio, pinIN + 1);
+    for (int i = 0; i < 9; i++) {
+        pio_gpio_init(pio, pinIN + i);
+    }
 
-    pio_sm_config c = led_pwm_program_get_default_config(offset);
+    pio_sm_config c = capture_bt656_program_get_default_config(offset);
     sm_config_set_in_pins(&c, pinIN);
     sm_config_set_in_shift(&c, true /* right */, true /* auto */, 32);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
+
+; ---------------------------------
+; BT656 ストリーム(DDR)を入力
+; in:
+;  - bit 0-7: data
+; 
+;  - gpio 1 : clock
+;
+.program capture_bt656_ddr
+.define GPIO_CLOCK 1
+
+    ; 28.67MHzは34.88ns間隔
+    ; duty 50:50 として 17.44ns 幅
+
+    out y, 32                   ; y = SAV, osr = transfer size
+    ; SAVのあと 50ns程度以内に transfer size を投入する必要がある
+    ; 10cycle以内くらい
+
+    ; AVコード2重化モード
+    ; ffffff 000000 000000 c7c7c7
+    ; v5: fff:fff 000:000 000:000 c7c:7c7 ←   0xc70000ff
+    ; v4: fff:fff 000:000 000:000 7cc:c77 ←   0x770000ff
+    ; B chだけで判定する妥当性がどのくらいか
+    ; 基本的にはブランキング期間なので落ち着いているはずだが
+;    wait 1 gpio GPIO_CLOCK
+;loop0:
+;    wait 0 gpio GPIO_CLOCK
+;    in pins, 8
+;    wait 1 gpio GPIO_CLOCK
+;    mov x, isr
+;    jmp x!=y, loop0
+
+    ; AVコード2重化なしモード
+    ; 00ff00 ec00ec
+    ; v5: ec0 0ec 00f f00 ←   0ec00ff0
+    ; v4: c0e ec0 0f0 00f ←   ec00f000
+    ; 流石にこれで一致させるのは問題がありそう?
+    wait 1 gpio GPIO_CLOCK
+loop0: 
+    wait 0 gpio GPIO_CLOCK
+    in pins, 12
+    mov x, isr ; 直近の32bitと比較
+    wait 1 gpio GPIO_CLOCK
+    in pins, 12
+    jmp x!=y, loop0
+
+
+
+    ; よくわからんけど極性逆にしないとうまくいかない
+    wait 0 gpio GPIO_CLOCK
+    in pins, 12
+    out x, 32                   ; transfer bytes - 1
+loop1:
+    wait 1 gpio GPIO_CLOCK
+    in pins, 12
+    push
+    wait 0 gpio GPIO_CLOCK
+    in pins, 12
+    jmp x--, loop1
+
+    ; 12bit超過するが問題はない
+
+
+
+% c-sdk {
+static inline void
+initProgramCaptureBT656DDR(PIO pio, uint sm, uint offset,
+                              uint pinIN, uint pinCLK)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinIN, 12, false);
+    for (int i = 0; i < 12; i++) {
+        pio_gpio_init(pio, pinIN + i);
+    }
+
+    pio_sm_set_consecutive_pindirs(pio, sm, pinCLK, 1, false);
+    pio_gpio_init(pio, pinCLK);
+
+    pio_sm_config c = capture_bt656_ddr_program_get_default_config(offset);
+    sm_config_set_in_pins(&c, pinIN);
+    // sm_config_set_in_shift(&c, true /* right */, true /* auto */, 24);
+    sm_config_set_in_shift(&c, true /* right */, false /* auto */, 32);
     sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);
@@ -54,6 +141,56 @@ initProgramCaptureBT656(PIO pio, uint sm, uint offset, uint pinIN)
 
 
 
+
+
+; ---------------------------------
+; BT656 ストリーム(DDR, HS/VS)を入力
+; in:
+;  - bit 0-7: data
+; 
+;  - gpio 1 : clock
+;
+.program capture_bt656_ddr_hs
+.define GPIO_CLOCK 1
+.define GPIO_VS 15
+.define GPIO_HS 14
+
+    out x, 32                   ; transfer words - 1
+
+    ; wait HS
+    wait 0 gpio GPIO_HS
+    wait 1 gpio GPIO_HS; ↑ edge
+
+    wait 1 gpio GPIO_CLOCK
+loop1:
+    wait 0 gpio GPIO_CLOCK
+    in pins, 12
+    wait 1 gpio GPIO_CLOCK
+    in pins, 20 ; HSync含めて入力、ゴミで上位8bitを埋める
+    jmp x--, loop1
+
+% c-sdk {
+static inline void
+initProgramCaptureBT656DDR_HS(PIO pio, uint sm, uint offset,
+                              uint pinIN, uint pinCLK)
+{
+    int n = 13; // 12bit + HSync. 連続しているべき
+    pio_sm_set_consecutive_pindirs(pio, sm, pinIN, n, false);
+    for (int i = 0; i < n; i++) {
+        pio_gpio_init(pio, pinIN + i);
+    }
+
+    pio_sm_set_consecutive_pindirs(pio, sm, pinCLK, 1, false);
+    pio_gpio_init(pio, pinCLK);
+
+    pio_sm_config c = capture_bt656_ddr_hs_program_get_default_config(offset);
+    sm_config_set_in_pins(&c, pinIN);
+    sm_config_set_in_shift(&c, true /* right */, true /* auto */, 32);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
 
 
 

@@ -40,4 +40,9 @@ namespace graphics
                                    size_t phase_x256);
     void resizeYCbCr420PreConfig(uint32_t *dst, size_t nDstPixels,
                                  const uint32_t *src);
+
+    void fixBitOrderV4(uint32_t *data, size_t n);
+    void resizeSimple(uint32_t *dst, const uint32_t *src, size_t n,
+                      int step_16, int ofs_16);
+    void convertXRGB8888toRGB565(uint16_t *dst, const uint32_t *src, size_t n);
 }

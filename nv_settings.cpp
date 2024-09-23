@@ -126,6 +126,7 @@ void NVSettings::load()
 
 void NVSettings::flash()
 {
+    return; // 仮に
     if (!dirty_)
     {
         return;

@@ -1,0 +1,137 @@
+;
+.program simple_serial
+.side_set 1
+
+    out pins, 1     side 0
+    nop             side 1
+
+% c-sdk {
+
+static inline void 
+setProgramSimpleSerialConfig(PIO pio, uint sm, uint offset,
+                             uint pinData, uint pinClk, 
+                             uint pullThres)
+{
+    pio_sm_config c = simple_serial_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pinData, 1);
+    sm_config_set_sideset_pins(&c, pinClk);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    sm_config_set_out_shift(&c, false /* left */, true /* auto */, pullThres);
+    sm_config_set_clkdiv(&c, 1.0f);
+    pio_sm_set_config(pio, sm, &c);
+}
+
+static inline void
+initProgramSimpleSerial(PIO pio, uint sm, uint offset,
+                        uint pinData, uint pinClk)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinData, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinClk, 1, true);
+    pio_gpio_init(pio, pinData);
+    pio_gpio_init(pio, pinClk);
+
+    pio_sm_init(pio, sm, offset, nullptr);
+    setProgramSimpleSerialConfig(pio, sm, offset, pinData, pinClk, 8);
+
+    pio_sm_set_enabled(pio, sm, true);
+
+}
+%}
+
+; ---------------------------------
+; Serialize 2 bit DDR 
+;
+.program simple_2bit_serialize_ddr
+.side_set 1
+
+    out pins, 2     side 0
+    nop             side 1  [2]
+    out pins, 2     side 1
+    nop             side 0  [2]
+
+    ; out で FIFO 待ちをする時 side set は有効になるので、
+    ; L の状態で待ちたいならタイミングはずらす必要がある
+
+
+    ; 2bit*160MHz = 320Mbit/s
+    ; 320*240*16*60 = 73728000
+    ; 320000000/73728000 = 4.34倍余裕
+
+% c-sdk {
+
+static inline void
+initProgramSimple2bitSerializeDDR(PIO pio, uint sm, uint offset,
+                               uint pinData, uint pinClk)
+{
+    pio_sm_set_consecutive_pindirs(pio, sm, pinData, 2, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pinClk, 1, true);
+    pio_gpio_init(pio, pinData + 0);
+    pio_gpio_init(pio, pinData + 1);
+    pio_gpio_init(pio, pinClk);
+
+    pio_sm_init(pio, sm, offset, nullptr);
+
+    pio_sm_config c = simple_2bit_serialize_ddr_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pinData, 2);
+    sm_config_set_sideset_pins(&c, pinClk);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    sm_config_set_clkdiv(&c, 1.0f);
+    pio_sm_set_config(pio, sm, &c);
+
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
+
+; ---------------------------------
+; Deserialize 2 bit DDR 
+;
+.program simple_2bit_deserialize_ddr
+.define PIN_CLOCK 2
+.define PIN_SYNC 3
+
+    out x, 32                   ; transfer words * 8 - 1
+
+    ; wait sync
+    wait 0 pin PIN_SYNC
+    wait 1 pin PIN_SYNC
+
+    wait 0 pin PIN_CLOCK
+loop1:
+    wait 1 pin PIN_CLOCK
+    nop
+    in pins, 2
+    wait 0 pin PIN_CLOCK
+    nop
+    in pins, 2
+    jmp x--, loop1
+
+    ; 4bit/6cycle
+    ; 320*240*16*60/4*6 = 116MHz 以上必要
+ 
+    ; jmp抜いてDMA完了で終了を検出する方法はあり得る
+    ; で、Programカウンタをリセット
+
+% c-sdk {
+static inline void
+initProgramSimple2BitDeserializeDDR(PIO pio, uint sm, uint offset,
+                                    uint pinIN)
+{
+    int n = 4;
+    pio_sm_set_consecutive_pindirs(pio, sm, pinIN, n, false);
+    for (int i = 0; i < n; i++) {
+        pio_gpio_init(pio, pinIN + i);
+    }
+
+    pio_sm_config c = simple_2bit_deserialize_ddr_program_get_default_config(offset);
+    sm_config_set_in_pins(&c, pinIN);
+    sm_config_set_in_shift(&c, true /* right */, true /* auto */, 32);
+    sm_config_set_out_shift(&c, true /* right */, true /* auto */, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
+ 
+
+
+

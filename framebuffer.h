@@ -22,6 +22,8 @@ namespace graphics
 
         int __not_in_flash_func(allocateLine)();
         void __not_in_flash_func(commitNextLine)(int lineID);
+        void fillBlackPlane();
+
         void finishPlane();
 
         void waitForCurrentPlaneLineReady(int y);
@@ -37,6 +39,12 @@ namespace graphics
 
         void dumpState() const;
         void requestDump() { dumpReq_ = true; }
+
+        int getWidth() const { return width_; }
+        int getHeight() const { return height_; }
+
+        int getWritePlaneID() const { return writePlaneID_; }
+        int getReadPlaneID() const { return readPlaneID_; }
 
     protected:
         Plane &getWritePlane() { return planes_[writePlaneID_]; }

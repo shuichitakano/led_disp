@@ -17,33 +17,34 @@
 #include "menu.h"
 #include "nv_settings.h"
 #include "app.h"
+#include "parameter_communicator.h"
+#include "textplane.h"
 
 #define ENABLE_CURSOR 0
 
 namespace video
 {
 
-    bool VideoCapture::tick(graphics::FrameBuffer &frameBuffer)
+    bool
+    VideoCaptureController::tick()
     {
         assert(adv7181_);
-#if 0
-        if (isFreeRun_ != adv7181_->isFreeRun())
-        {
-            signalDetected_ = false;
-        }
-        isFreeRun_ = adv7181_->isFreeRun();
-#endif
+        assert(handler_);
+
         if (signalDetected_ &&
             (adv7181_->isSDPMode() ||
              test(currentSTDIState_, adv7181_->getSTDIState(), 10)))
         {
-            captureFrame(frameBuffer);
-            adv7181_->updateStatus();
+            handler_->startCaptureFrame();
+            // adv7181_->setChGain(true, 200, 200, 200);
+            // adv7181_->setChOffset(0, 0, 0);
+            captureBegin_ = true;
             return true;
         }
         else
         {
-            stopBGCapture();
+            handler_->stopBGCapture();
+            DBGPRINT("%d: detecting signal...\n", id_);
 
             auto waitForCounterStable = [&]
             {
@@ -56,7 +57,10 @@ namespace video
                         adv7181_->setRGBSyncModeCSync(csync);
                         if (adv7181_->waitForCounterStable(timeout))
                         {
-                            DBGPRINT("csync = %d\n", csync);
+                            DBGPRINT("%d: csync = %d\n", id_, csync);
+                            // adv7181_->setChGain(true, 200, 200, 200);
+                            // adv7181_->setChOffset(0, 0, 0);
+
                             return true;
                         }
                     }
@@ -67,6 +71,7 @@ namespace video
                 }
                 return false;
             };
+
             if (adv7181_->isSDPMode() || waitForCounterStable())
             {
                 currentSTDIState_ = adv7181_->getSTDIState();
@@ -77,28 +82,32 @@ namespace video
                     adv7181_->setLineLength(currentSTDIState_.blockSize / 8);
                 }
 
-                if (analyzeSignal())
+                // sleep_ms(500);
+
+                if (handler_->analyzeSignal())
                 {
-                    measureInterval();
-                    baseCycleCounter_ = -1;
-                    // hdiv_ = DEFAULT_HDIV;
+                    signalDetected_ = true;
+                    // #if !USE_VSYNC_PIN
+                    //                     measureInterval();
+                    // #endif
 
-                    if (auto *p = NVSettings::instance().findCaptureSettings(currentSTDIState_))
-                    {
-                        DBGPRINT("setting found! %p\n", p);
-                        resampleWidth_ = p->resampleWidth;
-                        resampleOfs_ = p->resampleOfs;
-                        vOfs_ = p->vOfs;
-                    }
-                    else
-                    {
-                        DBGPRINT("setting not found.\n");
-                        resampleWidth_ = 640;
-                        resampleOfs_ = 40;
-                        vOfs_ = 0;
-                    }
-
-                    startBGCapture();
+                    /*
+                                        if (auto *p = NVSettings::instance().findCaptureSettings(currentSTDIState_))
+                                        {
+                                            DBGPRINT("setting found! %p\n", p);
+                                            resampleWidth_ = p->resampleWidth;
+                                            resampleOfs_ = p->resampleOfs;
+                                            vOfs_ = p->vOfs;
+                                        }
+                                        else
+                                        {
+                                            DBGPRINT("setting not found.\n");
+                                            resampleWidth_ = 640;
+                                            resampleOfs_ = 40;
+                                            vOfs_ = 0;
+                                        }
+                    */
+                    handler_->startBGCapture();
                 }
                 else
                 {
@@ -107,15 +116,37 @@ namespace video
             }
             else
             {
+#if !USE_VSYNC_PIN
                 isCSync_ ^= true;
-                DBGPRINT("video signal is not stabled.\n");
+#endif
+                DBGPRINT("%d: video signal is not stabled.\n", id_);
             }
         }
+        handler_->startCaptureFrame();
         return false;
+    }
+
+    void
+    VideoCaptureController::wait()
+    {
+        // if (captureBegin_)
+        {
+            handler_->endCaptureFrame();
+            adv7181_->updateStatus();
+            captureBegin_ = false;
+        }
+    }
+
+    void
+    VideoCaptureController::resetSignalDetection()
+    {
+        signalDetected_ = false;
+        adv7181_->clearStatusCache();
     }
 
     ////
 
+#if 0
     void
     VideoCapture::setHDiv(int v)
     {
@@ -124,13 +155,28 @@ namespace video
         auto hfreq = (CPU_CLOCK_KHZ * 1000) / (lineIntervalCycles128_ >> 7);
         adv7181_->setPLL(true, false, v, hfreq);
     }
+#endif
 
     void
     VideoCapture::startCaptureLine(BT656TimingCode sav, uint32_t time)
     {
         auto [line, linfo] = buffer_.getCurrentWriteLine();
-
         auto t = (baseTime_ - time) & 0xffffff;
+
+        int captureSize = dataWidthInWords_;
+
+#if USE_VSYNC_PIN
+        linfo.time = t;
+        linfo.lineIdx_x2 = currentCaptureLine_ << 1;
+        linfo.error = false;
+
+        if (currentCaptureLine_ > 240)
+        {
+            //            captureSize = 1;
+        }
+
+        ++currentCaptureLine_;
+#else
         int l2 = hw_divider_u32_quotient_inlined((t << 8) + (lineIntervalCycles128_ >> 1),
                                                  lineIntervalCycles128_);
         // DBGPRINT("t %d, l2 %d\n", t, l2);
@@ -143,25 +189,22 @@ namespace video
         int d2 = l2 - (frameIntervalLines_ << 1);
         if (d2 >= 0)
         {
-#if 0
-            constexpr int maxCompensateLine_x2 = 6;
-            auto overTime = std::min(maxCompensateLine_x2, d2) * lineIntervalCycles128_ >> 8;
-            baseTime_ = time - overTime;
-#else
             baseTime_ = time - d2;
-#endif
         }
+#endif
 
-        startVideoCapture(line.data(), asUInt(sav), dataWidthInWords_);
+        startVideoCapture(line.data(), asUInt(sav), captureSize);
     }
 
     bool
     VideoCapture::irq(uint32_t time)
     {
         assert(runningIRQ_);
+#if !USE_VSYNC_PIN
         auto [line, linfo] = buffer_.getCurrentWriteLine();
         auto [nextEAV, error] = video::findNextEAV(line.data(), activeWidth_ >> 1);
         linfo.error = error;
+#endif
 
         buffer_.nextWrite();
 
@@ -173,15 +216,37 @@ namespace video
         }
         else
         {
+#if USE_VSYNC_PIN
+            startCaptureLine(BT656TimingCode::SAV_ACTIVE_F0, time);
+#else
             auto nextSAV = video::getSAVCorrespondingToEAV(nextEAV);
             if (nextSAV == BT656TimingCode::INVALID)
             {
                 nextSAV = BT656TimingCode::SAV_ACTIVE_F0;
             }
             startCaptureLine(nextSAV, time);
+#endif
             // DBGPRINT("%p, l%d, %x, %x, %d\n", line.data(), linfo.lineIdx_x2, asUInt(nextEAV), asUInt(nextSAV), error);
         }
         return true; // continue
+    }
+
+    void
+    VideoCapture::vsyncIRQ(bool rise, uint32_t time)
+    {
+        gpio_put(28, rise);
+
+        if (rise)
+        {
+            latestVSyncRiseTime_ = time;
+            currentCaptureLine_ = 0;
+        }
+        else
+        {
+            latestVInterval_ = (latestVSyncFallTime_ - time) & 0xffffff;
+            latestVSyncFallTime_ = time;
+            // printf("%d %d\n", latestVInterval_, currentCaptureLine_);
+        }
     }
 
     void
@@ -197,6 +262,31 @@ namespace video
         {
             __wfe();
         }
+
+        bgCaptureActive_ = false;
+    }
+
+    void
+    VideoCapture::waitVSync() const
+    {
+#if USE_VSYNC_PIN
+        while (!getVSync())
+        {
+            tight_loop_contents();
+        }
+        while (getVSync())
+        {
+            tight_loop_contents();
+        }
+#else
+        // auto *tmp = buffer_.getRawBuffer().data();
+        uint32_t tmp;
+        startVideoCapture(&tmp, asUInt(video::BT656TimingCode::EAV_VSYNC_F0), 1);
+        waitVideoCapture();
+        startVideoCapture(&tmp, asUInt(video::BT656TimingCode::EAV_ACTIVE_F0), 1);
+        waitVideoCapture();
+        // ACTIVE_F0 の先頭を基準とする
+#endif
     }
 
     void
@@ -206,12 +296,7 @@ namespace video
 
         assert(!runningIRQ_);
 
-        auto *tmp = buffer_.getRawBuffer().data();
-        startVideoCapture(tmp, asUInt(video::BT656TimingCode::EAV_VSYNC_F0), 1);
-        waitVideoCapture();
-        startVideoCapture(tmp, asUInt(video::BT656TimingCode::EAV_ACTIVE_F0), 1);
-        waitVideoCapture();
-        // ACTIVE_F0 の先頭を基準とする
+        waitVSync();
 
         auto t = util::getSysTickCounter24();
         baseTime_ = t;
@@ -221,6 +306,7 @@ namespace video
         enableVideoCaptureIRQ(true);
 
         startCaptureLine(video::BT656TimingCode::SAV_ACTIVE_F0, t);
+        bgCaptureActive_ = true;
     }
 
     void
@@ -264,7 +350,101 @@ namespace video
     }
 
     void
-    VideoCapture::captureFrame(graphics::FrameBuffer &frameBuffer)
+    VideoCapture::captureFrame()
+    {
+        assert(frameBuffer_);
+        if (!bgCaptureActive_)
+        {
+            frameBuffer_->fillBlackPlane();
+            return;
+        }
+
+#if USE_VSYNC_PIN
+        captureFrameHSVS(*frameBuffer_);
+#else
+        captureFrameVC(*frameBuffer_);
+#endif
+    }
+
+    void
+    VideoCapture::captureFrameHSVS(graphics::FrameBuffer &frameBuffer)
+    {
+        int activeLines = std::min(DISPLAY_HEIGHT, activeLines_);
+        int y = 0;
+
+        // DBGPRINT("w %d\n", frameBuffer.getWritePlaneID());
+
+        auto sampleStep16 = ((resampleWidth_ << 16) + (resampleWidthFrac_ << 12)) * 2 / 320;
+        auto sampleOfs16 = resampleOfs_ * sampleStep16 + (resampleOfsFrac_ * sampleStep16 >> 4);
+
+        int tt0,
+            tt1, tt2, tt3;
+        while (y < activeLines)
+        {
+            auto t00 = util::getSysTickCounter24();
+            buffer_.waitForNextLine();
+            auto t22 = util::getSysTickCounter24();
+
+            auto [line, linfo] = buffer_.getCurrentReadLine();
+
+            const auto lx2 = linfo.lineIdx_x2;
+            const auto l = (lx2 >> 1) - 10;
+            // const auto l = (lx2 >> 1);
+            //            if (l < y)
+            if (l != y)
+            {
+                continue;
+            }
+
+            if (y < activeLines)
+            {
+                auto freeLines = frameBuffer.getFreeLineCount();
+                int dstLineID = frameBuffer.allocateLine();
+                auto dstBuffer = frameBuffer.getLineBuffer(dstLineID);
+
+                uint32_t resized[DISPLAY_WIDTH]; // 1280byte stack size注意
+                auto t0 = util::getSysTickCounter24();
+                graphics::resizeSimple(resized, line.data(), DISPLAY_WIDTH, sampleStep16, sampleOfs16);
+                // graphics::resizeSimple(resized, line.data(), DISPLAY_WIDTH, int(4.0f * 65536), 0);
+                auto t1 = util::getSysTickCounter24();
+                graphics::convertXRGB8888toRGB565(dstBuffer, resized, DISPLAY_WIDTH);
+                auto t2 = util::getSysTickCounter24();
+                // memset(dstBuffer, 255, DISPLAY_WIDTH * 2);
+                if (textPlane_)
+                {
+                    textPlane_->setupComposite();
+                    textPlane_->composite(dstBuffer, y);
+                }
+                auto t3 = util::getSysTickCounter24();
+
+                tt0 = (t0 - t1) & 0xffffff;
+                tt1 = (t1 - t2) & 0xffffff;
+                tt2 = (t2 - t3) & 0xffffff;
+
+                frameBuffer.commitNextLine(dstLineID);
+                ++y;
+            }
+
+            auto t11 = util::getSysTickCounter24();
+            tt3 = (t00 - t22) & 0xffffff;
+        }
+
+        for (auto ct = DISPLAY_HEIGHT - y; ct > 0; --ct)
+        {
+            int dstLineID = frameBuffer.allocateLine();
+            auto p = frameBuffer.getLineBuffer(dstLineID);
+            memset(p, 0, DISPLAY_WIDTH * 2);
+            frameBuffer.commitNextLine(dstLineID);
+            ++y;
+        }
+
+        assert(y == DISPLAY_HEIGHT);
+
+        // DBGPRINT("%d %d %d: %d\n", tt0, tt1, tt2, tt3);
+    }
+
+    void
+    VideoCapture::captureFrameVC(graphics::FrameBuffer &frameBuffer)
     {
         // buffer_.reset();
 
@@ -281,7 +461,7 @@ namespace video
         };
 
         auto nSrcPixels = std::min(720 - resampleOfs_, resampleWidth_);
-        graphics::setupResizeYCbCr420Config(DISPLAY_WIDTH, nSrcPixels, resampleOfs_, resamplePhaseOfs_ * 16);
+        graphics::setupResizeYCbCr420Config(DISPLAY_WIDTH, nSrcPixels, resampleOfs_, resampleOfsFrac_ * 16);
 
         struct Log
         {
@@ -411,8 +591,92 @@ namespace video
     bool
     VideoCapture::analyzeSignal()
     {
-        signalDetected_ = false;
+#if USE_VSYNC_PIN
+        return analyzeSignalHSVS();
+#else
+        return analyzeSignalVC();
+#endif
+    }
 
+    bool
+    VideoCapture::analyzeSignalHSVS()
+    {
+        auto &buffer = buffer_.getRawBuffer();
+
+        auto waitLine = [&](int n)
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                startVideoCapture(buffer.data(), EAV_VSYNC_F0, 1);
+                waitVideoCapture();
+            }
+        };
+
+        waitVSync();
+
+        waitLine(20);
+
+        startVideoCapture(buffer.data(), EAV_VSYNC_F0, buffer.size());
+        waitVideoCapture();
+
+        auto findHS = [&](bool active, int ofs) -> int
+        {
+            for (auto i = ofs; i < buffer.size(); ++i)
+            {
+                bool hs = buffer[i] & 0x1000000;
+                if (hs == active)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        };
+
+        auto activeEnd = findHS(false, 0);
+        auto nextLine = activeEnd > 0 ? findHS(true, activeEnd) : -1;
+        if (activeEnd < 0 || nextLine < 0)
+        {
+            return false;
+        }
+
+        activeWidth_ = std::min<int>(activeEnd, VideoStreamBuffer::UNIT_BUFFER_SIZE);
+        dataWidthInWords_ = activeWidth_;
+
+        waitVSync();
+        auto t0 = util::getSysTickCounter24();
+
+        waitLine(20);
+
+        auto ht0 = util::getSysTickCounter24();
+
+        startVideoCapture(buffer.data(), EAV_VSYNC_F0, 1);
+        waitVideoCapture();
+        auto ht1 = util::getSysTickCounter24();
+
+        waitVSync();
+        auto t1 = util::getSysTickCounter24();
+        waitVSync();
+        auto t2 = util::getSysTickCounter24();
+
+        auto VInterval0 = (t0 - t1) & 0xffffff;
+        auto VInterval1 = (t1 - t2) & 0xffffff;
+        auto HInterval = (ht0 - ht1) & 0xffffff;
+
+        auto activeLines2 = (VInterval0 + VInterval1 + HInterval / 2) / HInterval;
+        activeLines_ = activeLines2 >> 1;
+
+        DBGPRINT("active width: %d (%d)\n", activeWidth_, activeEnd);
+        DBGPRINT("line width: %d\n", nextLine);
+        DBGPRINT("active lines: %d\n", activeLines_);
+        DBGPRINT("V interval: %d, %d\n", VInterval0, VInterval1);
+        DBGPRINT("H interval: %d\n", HInterval);
+
+        return true;
+    }
+
+    bool
+    VideoCapture::analyzeSignalVC()
+    {
         auto findTimingCode = [&](const uint8_t *p, size_t size) -> std::pair<int, int>
         {
             for (auto i = 0u; i < size - 3; ++i)
@@ -662,7 +926,6 @@ namespace video
         hBlankSizeInBytes_ = hBlankSize;
         fieldInfo_ = fields;
         vSyncIntervalCycles_ = ((t0 - t1) & 0xffffff) / 2;
-        signalDetected_ = true;
         // activeLineOfs_ = std::min(fields[0].preVSyncLines, fields[1].preVSyncLines);
         // activeLineOfs_ = minV - fields[0].preVSyncLines;
         // activeLineOfs_ = minV - maxV;
@@ -794,6 +1057,7 @@ namespace video
 
     void VideoCapture::simpleCaptureTest()
     {
+#if 0
         auto &buffer = buffer_.getRawBuffer();
         startVideoCapture(buffer.data(), EAV_VSYNC_F0, 1);
         waitVideoCapture();
@@ -809,6 +1073,20 @@ namespace video
         waitVideoCapture();
         DBGPRINT("VSync line:\n");
         util::dump(buffer.begin(), buffer.end());
+#else
+        DBGPRINT("Test\n");
+        auto &buffer = buffer_.getRawBuffer();
+        // startVideoCapture(buffer.data(), EAV_VSYNC_F0, buffer.size());
+        // startVideoCapture(buffer.data(), 0x09d0f00f, buffer.size());
+        startVideoCapture(buffer.data(), 0xec00f000, buffer.size());
+        waitVideoCapture();
+
+        graphics::fixBitOrderV4(buffer.data(), buffer.size());
+        graphics::convertXRGB8888toRGB565((uint16_t *)buffer.data(), buffer.data(), buffer.size());
+        graphics::convertBGRB888toBGR565((uint16_t *)buffer.data(), (uint8_t *)buffer.data(), buffer.size());
+
+        util::dump(buffer.begin(), buffer.end());
+#endif
     }
 
     void VideoCapture::imageConvertTest()
@@ -836,36 +1114,32 @@ namespace video
     }
 
     void
-    VideoCapture::resetSignalDetection()
-    {
-        signalDetected_ = false;
-        adv7181_->clearStatusCache();
-    }
-
-    void
     VideoCapture::initMenu(ui::Menu &menu)
     {
         menu.appendItem(&resampleWidth_, {512, 720}, "SAMPLE W", "Reset", {}, [&]
                         { resampleWidth_ = 640; });
 
+        menu.appendItem(&resampleWidthFrac_, {0, 15}, "WIDTH FRAC", "Reset", {}, [&]
+                        { resampleWidthFrac_ = 0; });
+
         menu.appendItem(&resampleOfs_, {0, 255}, "SAMPLE OFS", "Reset", {}, [&]
                         { resampleOfs_ = 40; });
 
-        menu.appendItem(&resamplePhaseOfs_, {0, 15}, "PHASE OFS", "Reset", {}, [&]
-                        { resamplePhaseOfs_ = 0; });
+        menu.appendItem(&resampleOfsFrac_, {0, 15}, "OFS FRAC", "Reset", {}, [&]
+                        { resampleOfsFrac_ = 0; });
 
         menu.appendItem(&vOfs_, {-50, 50}, "V OFFSET", "Reset", {}, [&]
                         { vOfs_ = 0; });
 
 #ifndef NDEBUG
-        menu.appendItem(
-                &hdiv_, {848, 868}, "PLL H DIV", "Reset",
-                [&]
-                { setHDiv(hdiv_); },
-                [&]
-                { setHDiv(858); })
-            .setInsensitiveFunc([this]
-                                { return adv7181_->isSDPMode(); });
+        // menu.appendItem(
+        //         &hdiv_, {848, 868}, "PLL H DIV", "Reset",
+        //         [&]
+        //         { setHDiv(hdiv_); },
+        //         [&]
+        //         { setHDiv(858); })
+        //     .setInsensitiveFunc([this]
+        //                         { return adv7181_->isSDPMode(); });
 
         // menu.appendItem("AUTO ADJ.", "Adjust Params",
         //                 [&]
@@ -881,6 +1155,7 @@ namespace video
 #endif
     }
 
+#if 0
     void
     VideoCapture::onMenuClose()
     {
@@ -896,4 +1171,32 @@ namespace video
             NVSettings::instance().setCaptureSetting(s);
         }
     }
+#endif
+
+    ///////////////
+    void RemoteVideoCaptureHandler::startBGCapture()
+    {
+        com_->sendRequest(VideoCaptureRequest::START_CAPTURE);
+    }
+
+    void RemoteVideoCaptureHandler::stopBGCapture()
+    {
+        com_->sendRequest(VideoCaptureRequest::STOP_CAPTURE);
+    }
+
+    bool RemoteVideoCaptureHandler::analyzeSignal()
+    {
+        return com_->sendRequest(VideoCaptureRequest::ANALYZE_SIGNAL);
+    }
+
+    void RemoteVideoCaptureHandler::startCaptureFrame()
+    {
+        com_->sendRequest(VideoCaptureRequest::CAPTURE_FRAME);
+    }
+
+    void RemoteVideoCaptureHandler::endCaptureFrame()
+    {
+        com_->sendRequest(VideoCaptureRequest::WAIT_CAPTURE);
+    }
+
 }

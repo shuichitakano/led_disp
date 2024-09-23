@@ -6,12 +6,23 @@
 
 #include <stdint.h>
 
+#if BOARDTYPE_SEPARATE_VIDEO
+#define USE_VSYNC_PIN 1
+#else
+#define USE_VSYNC_PIN 0
+#endif
+
 void waitVideoCapture();
 void startVideoCapture(uint32_t *dst,
                        uint32_t startCode, uint32_t transferWords);
 void enableVideoCaptureIRQ(bool f);
+bool getVSync();
 
+#if BOARDTYPE_SEPARATE_VIDEO
+static constexpr uint32_t CPU_CLOCK_KHZ = 160000;
+#else
 static constexpr uint32_t CPU_CLOCK_KHZ = 266000;
+#endif
 // static constexpr uint32_t CPU_CLOCK_KHZ = 250000;
 
 static constexpr int UNIT_WIDTH = 16;

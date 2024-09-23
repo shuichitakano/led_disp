@@ -23,11 +23,7 @@ namespace device
         uint8_t addr_ = 0;
 
     public:
-        void init(i2c_inst_t *i2cInst, Type type, int addrSel = 0)
-        {
-            i2c_ = i2cInst;
-            addr_ = static_cast<int>(type) | addrSel;
-        }
+        bool init(i2c_inst_t *i2cInst, Type type, int addrSel = 0);
 
         void setPortDir(uint8_t inputPortBits) const;
         void output(uint8_t bits) const;

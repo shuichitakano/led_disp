@@ -40,7 +40,8 @@ namespace device
         };
 
     public:
-        void init(i2c_inst_t *i2cInst) { i2c_ = i2cInst; }
+        bool init(i2c_inst_t *i2cInst, bool master);
+
         void reset() const;
         void selectInput(SignalInput input);
         SignalInput getCurrentInput() const { return input_; }
@@ -63,6 +64,9 @@ namespace device
         void setRGBSyncModeCSync(bool f) const;
         void setPLL(bool manual, bool immediate, int div, int hFreq) const;
 
+        void setChGain(bool manual, int chA, int chB, int chC) const;
+        void setChOffset(int chA, int chB, int chC) const;
+
         bool waitForCounterStable(int timeOutTimeInMS);
 
         const STDIState &getSTDIState() const { return STDIState_; }
@@ -75,6 +79,7 @@ namespace device
 
     private:
         i2c_inst_t *i2c_{};
+        int addr_{};
         SignalInput input_{SignalInput::NONE};
 
         uint8_t statusRegs_[4]{};

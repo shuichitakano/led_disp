@@ -24,6 +24,10 @@ extern "C"
                         uint32_t *dstTail);
 
     void convertYCbCr2RGB565(uint16_t *dst, const uint32_t *src, size_t nPixels);
+
+    void resizeSimple32Loop(uint32_t *dst, const uint32_t *tail);
+    void fixBitOrderV4Opt(uint32_t *dst, uint32_t *tail);
+    void convertXRGB8888toRGB565Opt(uint16_t *dst, const uint32_t *src, size_t n);
 }
 
 namespace graphics
@@ -427,7 +431,6 @@ namespace graphics
         ::resizeYCbCr420(dst, dst + nDstPixels);
     }
     ////
-
 #if 0
     void __not_in_flash_func(convertYCbCr2RGB565)(uint16_t *dst,
                                                   const uint32_t *src, size_t nPixels)
@@ -510,4 +513,91 @@ namespace graphics
         convertYCbCrInterpConfig_.apply();
         ::convertYCbCr2RGB565(dst, src, nPixels);
     }
+
+    void __not_in_flash_func(fixBitOrderV4)(uint32_t *data, size_t n)
+    {
+        auto *tail = data + n;
+#if 1
+        ::fixBitOrderV4Opt(data, tail);
+#else
+        auto m1 = 0x00ff0ff0;
+        auto m2 = 0x0000f00f;
+        while (data != tail)
+        {
+            auto v = *data;
+            auto t1 = v & m1;
+            auto t2 = v & m2;
+            *data++ = (t1 >> 4) | (t2 << 8);
+        }
+#endif
+    }
+
+    void __not_in_flash_func(resizeSimple)(uint32_t *dst, const uint32_t *src, size_t n,
+                                           int step_16, int ofs_16)
+    {
+        {
+            auto c0 = interp_default_config();
+            interp_config_set_add_raw(&c0, true);
+            interp_config_set_shift(&c0, 16);
+            interp_config_set_mask(&c0, 2, 31);
+
+            auto c1 = interp_default_config();
+
+            interp_set_config(interp0_hw, 0, &c0);
+            interp_set_config(interp0_hw, 1, &c1);
+
+            interp0_hw->accum[0] = ofs_16 << 2;
+            interp0_hw->accum[1] = 0;
+            interp0_hw->base[0] = step_16 << 2;
+            interp0_hw->base[1] = 0;
+            interp0_hw->base[2] = reinterpret_cast<uintptr_t>(src);
+        }
+        auto tail = dst + n;
+#if 0
+        while (dst != tail)
+        {
+            auto *p = reinterpret_cast<const uint32_t *>(interp0_hw->pop[2]);
+            *dst++ = *p;
+        }
+#else
+        ::resizeSimple32Loop(dst, tail);
+#endif
+    }
+
+    void __not_in_flash_func(convertXRGB8888toRGB565)(uint16_t *dst, const uint32_t *src, size_t n)
+    {
+#if 1
+        {
+            auto c0 = interp_default_config();
+            interp_config_set_shift(&c0, 8);
+            interp_config_set_mask(&c0, 11, 15);
+
+            auto c1 = interp_default_config();
+            interp_config_set_shift(&c1, 5);
+            interp_config_set_mask(&c1, 5, 10);
+            interp_config_set_cross_input(&c1, true);
+
+            interp_set_config(interp0_hw, 0, &c0);
+            interp_set_config(interp0_hw, 1, &c1);
+
+            interp0_hw->base[0] = 0;
+            interp0_hw->base[1] = 0;
+            interp0_hw->base[2] = 0;
+        }
+        ::convertXRGB8888toRGB565Opt(dst, src, n);
+#else
+        uint32_t m = 63 << 5;
+        while (n--)
+        {
+            uint32_t v = *src;
+            uint32_t r = (v >> (16 + 3)) << 11;
+            uint32_t g = (v >> (8 + 2 - 5)) & m;
+            uint32_t b = (v << 24) >> (24 + 3);
+            *dst = r | g | b;
+            ++dst;
+            ++src;
+        }
+#endif
+    }
+
 }
