@@ -10,6 +10,12 @@
     ; 28.67MHzは34.88ns間隔
     ; duty 50:50 として 17.44ns 幅
 
+    ; 720*525/2*60 = 11340000
+    ; 11.34*6=68.04MHzあればいい
+    ; 100MHzでもいける
+    ; 100000000/(320*270*60) = 19 cycle/pixel
+    ; 150000000/(320*270*60) = 29 cycle/pixel
+
     out y, 32                   ; y = SAV, osr = transfer size
     ; SAVのあと 50ns程度以内に transfer size を投入する必要がある
     ; 10cycle以内くらい

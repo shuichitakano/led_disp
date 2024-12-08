@@ -5,6 +5,8 @@ cmake_minimum_required(VERSION 3.13)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
+set(PICO_BOARD pico2 CACHE STRING "Board type")
+
 # Initialise pico_sdk from installed location
 # (note this can come from environment, CMake cache etc)
 set(PICO_SDK_PATH "/Users/shuichi/pico/pico-sdk")
@@ -20,8 +22,8 @@ pico_sdk_init()
 add_compile_options(-fno-strict-aliasing)
 
 
-#add_compile_definitions(BOARDTYPE_SINGLE)
-add_compile_definitions(BOARDTYPE_SEPARATE_LED=1)
+add_compile_definitions(BOARDTYPE_SINGLE=1)
+#add_compile_definitions(BOARDTYPE_SEPARATE_LED=1)
 #add_compile_definitions(BOARDTYPE_SEPARATE_VIDEO=1)
 
 # Add executable. Default name is the project name, version 0.1

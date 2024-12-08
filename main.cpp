@@ -708,7 +708,12 @@ namespace
         void init(bool primary)
         {
             enabled = adv7181.init(i2cIF, primary);
-            enabled &= pca9554.init(i2cIF, device::PCA9554::Type::C, primary ? 4 : 0);
+#if BOARDTYPE_SINGLE
+            auto pca9554Addr = primary ? 0 : 4;
+#else
+            auto pca9554Addr = primary ? 4 : 0;
+#endif
+            enabled &= pca9554.init(i2cIF, device::PCA9554::Type::C, pca9554Addr);
         }
     };
 
@@ -802,7 +807,11 @@ struct LEDDriver
     {
         LEDDriverInst_ = this;
 
+#if BOARDTYPE_SINGLE
+        constexpr int margin_lines = 2;
+#else
         constexpr int margin_lines = 20;
+#endif
         frameBuffer_.initialize(TOTAL_WIDTH, TOTAL_HEIGHT, margin_lines);
 
         bmp_ = (const graphics::BMP *)MagickImage;
@@ -950,7 +959,8 @@ struct LEDDriver
         auto *line2 = frameBuffer_.getLineBuffer(lineID2);
         auto *line3 = frameBuffer_.getLineBuffer(lineID3);
 
-        if (textComp && 0)
+#if BOARDTYPE_SINGLE
+        if (textComp)
         {
             textPlane_.setupComposite();
             textPlane_.composite(line0, y);
@@ -959,6 +969,7 @@ struct LEDDriver
             textPlane_.composite(line3, y3);
             textLayerCompositeLine_ = y + 1;
         }
+#endif
         updateDataBuffertTiming_.t2 = util::getSysTickCounter24();
 
         // 先頭に ラインの繰り返し数
@@ -1301,7 +1312,7 @@ struct LEDDriver
     void initMenu()
     {
         static bool inputSelClose = false;
-#if 0
+#if BOARDTYPE_SINGLE
         static constexpr const char *inputTexts[] = {"VIDEO", "S VIDEO", "COMPONENT", "RGB"};
         menu_.appendItem(&currentInput_, "INPUT", std::begin(inputTexts), std::end(inputTexts),
                          "Select Input",
@@ -1345,7 +1356,7 @@ struct LEDDriver
                          [&]
                          { menu_.close(); });
 
-        infoMode_ = NVSettings::instance().getState().infoMode;
+        //        infoMode_ = NVSettings::instance().getState().infoMode;
 
 #if !defined(NDEBUG) && 0
         menu_.appendItem("DUMP FB", "Dump FrameBuffer",
@@ -1448,7 +1459,7 @@ struct LEDDriver
 
         auto prevTick = util::getSysTickCounter24();
 
-        watchdog_enable(5000, true);
+        // watchdog_enable(5000, true);
 
         bool ledState = true;
 
@@ -1814,8 +1825,8 @@ int main()
 
 #if 0
     sleep_ms(1000);
-    adv7181_.selectInput(device::SignalInput::COMPONENT);
-
+    callADV7181([&](auto &adv7181)
+                { adv7181.selectInput(device::SignalInput::COMPONENT); });
     driver_.capture_.simpleCaptureTest();
     while (1)
         ;
@@ -1826,9 +1837,15 @@ int main()
         callPCA9554([](auto &pca9554_)
                     { pca9554_.setPortDir(0b00111111); });
 
+#if BOARDTYPE_SINGLE
+        // auto defaultInput = device::SignalInput::COMPOSITE;
+        auto defaultInput = device::SignalInput::COMPONENT;
+        // auto defaultInput = device::SignalInput::RGB21;
+#else
         // auto defaultInput = device::SignalInput::COMPOSITE;
         auto defaultInput = device::SignalInput::RGB21;
         // auto defaultInput = device::SignalInput::COMPONENT;
+#endif
         callADV7181([&](auto &adv7181_)
                     { adv7181_.selectInput(defaultInput); });
         device::selectAudioInput(deviceSet_[0].pca9554, defaultInput);

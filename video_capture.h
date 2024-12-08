@@ -34,6 +34,7 @@ namespace video
         virtual void startBGCapture() = 0;
         virtual void stopBGCapture() = 0;
         virtual bool analyzeSignal() = 0;
+        virtual void measureInterval() {}
         virtual void startCaptureFrame() = 0;
         virtual void endCaptureFrame() = 0;
     };
@@ -217,6 +218,7 @@ namespace video
         void startBGCapture() override { capture_->startBGCapture(); }
         void stopBGCapture() override { capture_->stopBGCapture(); }
         bool analyzeSignal() override { return capture_->analyzeSignal(); }
+        void measureInterval() override { capture_->measureInterval(); }
         void startCaptureFrame() override {}
         void endCaptureFrame() override { capture_->captureFrame(); }
     };

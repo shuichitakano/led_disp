@@ -87,9 +87,9 @@ namespace video
                 if (handler_->analyzeSignal())
                 {
                     signalDetected_ = true;
-                    // #if !USE_VSYNC_PIN
-                    //                     measureInterval();
-                    // #endif
+#if !USE_VSYNC_PIN
+                    handler_->measureInterval();
+#endif
 
                     /*
                                         if (auto *p = NVSettings::instance().findCaptureSettings(currentSTDIState_))
@@ -305,8 +305,8 @@ namespace video
         breakIRQ_ = false;
         enableVideoCaptureIRQ(true);
 
-        startCaptureLine(video::BT656TimingCode::SAV_ACTIVE_F0, t);
         bgCaptureActive_ = true;
+        startCaptureLine(video::BT656TimingCode::SAV_ACTIVE_F0, t);
     }
 
     void
@@ -1057,7 +1057,7 @@ namespace video
 
     void VideoCapture::simpleCaptureTest()
     {
-#if 0
+#if 1
         auto &buffer = buffer_.getRawBuffer();
         startVideoCapture(buffer.data(), EAV_VSYNC_F0, 1);
         waitVideoCapture();
@@ -1081,9 +1081,9 @@ namespace video
         startVideoCapture(buffer.data(), 0xec00f000, buffer.size());
         waitVideoCapture();
 
-        graphics::fixBitOrderV4(buffer.data(), buffer.size());
-        graphics::convertXRGB8888toRGB565((uint16_t *)buffer.data(), buffer.data(), buffer.size());
-        graphics::convertBGRB888toBGR565((uint16_t *)buffer.data(), (uint8_t *)buffer.data(), buffer.size());
+        // graphics::fixBitOrderV4(buffer.data(), buffer.size());
+        // graphics::convertXRGB8888toRGB565((uint16_t *)buffer.data(), buffer.data(), buffer.size());
+        // graphics::convertBGRB888toBGR565((uint16_t *)buffer.data(), (uint8_t *)buffer.data(), buffer.size());
 
         util::dump(buffer.begin(), buffer.end());
 #endif

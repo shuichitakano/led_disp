@@ -420,13 +420,19 @@ namespace device
 
             case SignalInput::COMPONENT:
                 printf("Component\n");
-                // return i2cDataComponentCP_;
+#if BOARDTYPE_SINGLE
+                return i2cDataComponentCP_;
+#else
                 return i2cDataComponentDDR_;
+#endif
 
             case SignalInput::RGB21:
                 printf("RGB\n");
-                // return i2cDataRGB_CP_;
+#if BOARDTYPE_SINGLE
+                return i2cDataRGB_CP_;
+#else
                 return i2cDataRGB_CP_DDR_;
+#endif
             };
             return {};
         }();

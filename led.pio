@@ -353,6 +353,11 @@ initProgramLEDCommandWithLatch(PIO pio, uint sm, uint offset,
     ; 36 + 32 = 68
     ; 1/(160*120*16/2*(68*10^-9)) = 95.74Hz
     ; 1/(160*120*16/2*(80*10^-9)) = 81.38Hz
+    ; 1/(160*120*16/2*(107*10^-9)) = 60.8Hz
+    ; 1/110000000*8*10^9
+    ; 100MHz で 80ns/cycle
+    ; 110MHz で 72ns/cycle
+    ; 150MHz で 53ns/cycle
     ;
     ; #data: FFFFFFFF|00000000
     ; Data : 0 1 2 3 |0 1 2 3 

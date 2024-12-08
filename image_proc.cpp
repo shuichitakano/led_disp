@@ -147,7 +147,7 @@ namespace graphics
                 {
                     auto c = interp_default_config();
                     interp_config_set_shift(&c, 1);
-                    interp_config_set_mask(&c, 0, 31);
+                    interp_config_set_mask(&c, 0, 30);
                     interp_set_config(interp, lane, &c);
                 };
                 configAccum(interp0, 1);
@@ -391,7 +391,8 @@ namespace graphics
                 c0 = interp_default_config();
                 interp_config_set_add_raw(&c0, true);
                 interp_config_set_shift(&c0, 16);
-                interp_config_set_mask(&c0, 1, 31);
+                // interp_config_set_mask(&c0, 1, 31);
+                interp_config_set_mask(&c0, 1, 31 - 16);
 
                 c1 = interp_default_config();
 
